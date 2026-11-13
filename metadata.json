@@ -1,6 +1,6 @@
 {
-  "name": "",
-  "description": "",
+  "name": "JBL Baseball Franchise Manager",
+  "description": "JBL 프로야구단 구단 운영 & 선수 육성 시뮬레이션 게임. 투구/이닝 단위 실시간 문자 중계, 상세 스탯 및 훈련 성장, 트레이드, 신인 드래프트, Google Apps Script 스프레드시트 연동 지원.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
