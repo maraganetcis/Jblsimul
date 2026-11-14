@@ -4,15 +4,19 @@
  */
 
 import React, { useState } from 'react';
-import { ArrowLeftRight, Shield, CheckCircle, XCircle, Search, HelpCircle, Users } from 'lucide-react';
-import { Player, Team } from '../types/baseball';
+import { ArrowLeftRight, CheckCircle, XCircle, Bell } from 'lucide-react';
+import { PendingApproval, Player, Team } from '../types/baseball';
 import { soundEffects } from '../utils/audio';
+import { calculatePlayerTradeValue } from '../utils/simulationEngine';
 
 interface TradeViewProps {
   userTeam: Team;
   allTeams: Team[];
   userRoster: Player[];
   allPlayers: Record<string, Player[]>;
+  pendingApprovalsCount: number;
+  onOpenApprovals: () => void;
+  onQueueTradeApproval: (approval: PendingApproval) => void;
   onExecuteTrade: (myPlayer: Player, theirPlayer: Player, theirTeamId: string, logDesc: string) => void;
   onOpenPlayerDetail: (player: Player) => void;
 }
@@ -22,6 +26,9 @@ export const TradeView: React.FC<TradeViewProps> = ({
   allTeams,
   userRoster,
   allPlayers,
+  pendingApprovalsCount,
+  onOpenApprovals,
+  onQueueTradeApproval,
   onExecuteTrade,
   onOpenPlayerDetail,
 }) => {
@@ -37,68 +44,101 @@ export const TradeView: React.FC<TradeViewProps> = ({
   const myOfferPlayer = userRoster.find(p => p.id === myOfferPlayerId);
   const theirTargetPlayer = targetRoster.find(p => p.id === theirTargetPlayerId);
 
-  // 선수 트레이드 가치(Trade Value) 계산 공식
-  const calculatePlayerValue = (p: Player): number => {
-    let base = 50;
-    const potBoost = p.potential === 'S' ? 35 : p.potential === 'A' ? 22 : p.potential === 'B' ? 12 : p.potential === 'C' ? 0 : -10;
-    const ageFactor = p.age <= 23 ? 15 : p.age <= 28 ? 10 : p.age <= 32 ? 2 : -12;
-
-    if (p.role === 'BATTER' && p.batterStats) {
-      const { contact, power, eye, defense } = p.batterStats;
-      base = (contact * 0.35 + power * 0.35 + eye * 0.15 + defense * 0.15);
-    } else if (p.role === 'PITCHER' && p.pitcherStats) {
-      const { velocity, control, stuff } = p.pitcherStats;
-      const veloScore = (velocity - 130) * 2;
-      base = (veloScore * 0.3 + control * 0.35 + stuff * 0.35);
-    }
-    return Math.round(base + potBoost + ageFactor);
-  };
-
-  const myValue = myOfferPlayer ? calculatePlayerValue(myOfferPlayer) : 0;
-  const theirValue = theirTargetPlayer ? calculatePlayerValue(theirTargetPlayer) : 0;
+  const myValue = myOfferPlayer ? calculatePlayerTradeValue(myOfferPlayer) : 0;
+  const theirValue = theirTargetPlayer ? calculatePlayerTradeValue(theirTargetPlayer) : 0;
 
   const handleProposeTrade = () => {
     if (!myOfferPlayer || !theirTargetPlayer) {
-      alert('제안할 내 선수와 영입할 상대 선수를 각각 선택해주세요.');
+      setTradeMessage({
+        type: 'REJECT',
+        text: '제안할 우리 팀 선수와 영입할 상대 구단 선수를 각각 선택해주세요.',
+      });
       return;
     }
 
     const delta = myValue - theirValue;
     if (delta >= -5) {
       soundEffects.playCrowdCheer(true);
-      const desc = `${userTeam.name}의 ${myOfferPlayer.name}(${myOfferPlayer.primaryPosition}) <-> ${targetTeam.name}의 ${theirTargetPlayer.name}(${theirTargetPlayer.primaryPosition}) 트레이드 성사!`;
-      onExecuteTrade(myOfferPlayer, theirTargetPlayer, targetTeam.id, desc);
-      setTradeMessage({
-        type: 'SUCCESS',
-        text: `🎉 트레이드 성사! ${targetTeam.name} 구단이 제안을 수락하였습니다. (${theirTargetPlayer.name} 선수 입단 완료)`,
+      onQueueTradeApproval({
+        id: `appr_user_trade_${Date.now()}`,
+        category: 'TRADE_INCOMING',
+        title: `${targetTeam.name} 트레이드 최종 승인 대기`,
+        subtitle: `${targetTeam.name} 단장이 제안에 동의했습니다. 최종 승인하시겠습니까?`,
+        createdAtDay: 1,
+        seasonNumber: 26,
+        fromTeamId: targetTeam.id,
+        toTeamId: userTeam.id,
+        offeredPlayer: theirTargetPlayer,
+        requestedPlayer: myOfferPlayer,
+        evaluationSummary: `${targetTeam.name} 측이 ${theirTargetPlayer.name}(가치 ${theirValue}점) ↔ ${myOfferPlayer.name}(가치 ${myValue}점) 트레이드를 수락했습니다. 아래 [승인 확정]을 누르면 즉시 선수가 이동합니다.`,
       });
       setMyOfferPlayerId('');
       setTheirTargetPlayerId('');
+      setTradeMessage({
+        type: 'SUCCESS',
+        text: `✅ ${targetTeam.name} 구단이 트레이드 조건에 합의했습니다! 방금 열린 승인 알림창에서 최종 확정해주세요.`,
+      });
     } else {
       soundEffects.playUmpireCall(false);
-      setTradeMessage({
-        type: 'REJECT',
-        text: `❌ ${targetTeam.name} 단장: "우리 핵심 자원인 ${theirTargetPlayer.name} 선수의 가치(${theirValue}점)에 비해 제안하신 선수(${myOfferPlayer.name}, ${myValue}점)의 가치가 부족하여 제안을 거절합니다."`,
-      });
+      // 상대 구단이 가치가 맞는 대체 역제안을 알림창으로 보낼 수 있음
+      const counterTarget = userRoster.find(
+        p => p.id !== myOfferPlayer.id && Math.abs(calculatePlayerTradeValue(p) - theirValue) <= 10
+      );
+      if (counterTarget) {
+        onQueueTradeApproval({
+          id: `appr_counter_${Date.now()}`,
+          category: 'TRADE_INCOMING',
+          title: `${targetTeam.name} 구단의 트레이드 역제안 도착`,
+          subtitle: `${myOfferPlayer.name} 대신 ${counterTarget.name} 선수를 포함한 수정안을 제시했습니다.`,
+          createdAtDay: 1,
+          seasonNumber: 26,
+          fromTeamId: targetTeam.id,
+          toTeamId: userTeam.id,
+          offeredPlayer: theirTargetPlayer,
+          requestedPlayer: counterTarget,
+          evaluationSummary: `${targetTeam.name} 단장이 ${theirTargetPlayer.name}(가치 ${theirValue}점)을 내주는 조건으로 우리 팀 ${counterTarget.name}(가치 ${calculatePlayerTradeValue(counterTarget)}점)을 요청했습니다. 알림창에서 수락 또는 거절할 수 있습니다.`,
+        });
+        setTradeMessage({
+          type: 'REJECT',
+          text: `🔔 ${targetTeam.name} 단장이 원래 제안을 거절하고 [${counterTarget.name} ↔ ${theirTargetPlayer.name}] 역제안을 알림창으로 보냈습니다!`,
+        });
+      } else {
+        setTradeMessage({
+          type: 'REJECT',
+          text: `❌ ${targetTeam.name} 단장: "우리 핵심 자원인 ${theirTargetPlayer.name} 선수의 가치(${theirValue}점)에 비해 제안하신 선수(${myOfferPlayer.name}, ${myValue}점)의 가치가 부족하여 제안을 거절합니다."`,
+        });
+      }
     }
   };
 
   return (
     <div className="space-y-6 pb-12">
       {/* Header */}
-      <div className="bg-white border border-sky-100 rounded-2xl p-5 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="bg-white border border-sky-100 rounded-2xl p-5 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
           <h2 className="text-xl font-display font-bold text-slate-900 flex items-center gap-2">
             <ArrowLeftRight className="w-5 h-5 text-sky-600" /> JBL 공식 선수 트레이드 시장 (Trade Market)
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            타 9개 구단의 전력을 탐색하고, 구단 간의 균형 있는 전력 보강을 위한 맞교환 트레이드를 협상하세요.
+            타 구단의 전력을 탐색해 제안하거나, 매 경기 후 도착하는 트레이드 결재 알림을 승인·거절하세요.
           </p>
         </div>
 
-        {/* Target Team Select Dropdown */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-slate-500 font-semibold whitespace-nowrap">협상 상대 구단:</span>
+        {/* Target Team Select Dropdown & Approval Inbox Button */}
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            onClick={onOpenApprovals}
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold border transition-colors ${
+              pendingApprovalsCount > 0
+                ? 'bg-amber-50 hover:bg-amber-100 border-amber-300 text-amber-800'
+                : 'bg-sky-50 hover:bg-sky-100 border-sky-200 text-sky-800'
+            }`}
+          >
+            <Bell className="w-3.5 h-3.5" />
+            결재 알림함 ({pendingApprovalsCount}건)
+          </button>
+
+          <span className="text-xs text-slate-500 font-semibold whitespace-nowrap">협상 상대:</span>
           <select
             value={selectedTeamId}
             onChange={(e) => {
@@ -227,7 +267,7 @@ export const TradeView: React.FC<TradeViewProps> = ({
 
           <div className="max-h-96 overflow-y-auto space-y-1.5">
             {userRoster.map(p => {
-              const val = calculatePlayerValue(p);
+              const val = calculatePlayerTradeValue(p);
               const isSelected = p.id === myOfferPlayerId;
               return (
                 <div
@@ -267,7 +307,7 @@ export const TradeView: React.FC<TradeViewProps> = ({
 
           <div className="max-h-96 overflow-y-auto space-y-1.5">
             {targetRoster.map(p => {
-              const val = calculatePlayerValue(p);
+              const val = calculatePlayerTradeValue(p);
               const isSelected = p.id === theirTargetPlayerId;
               return (
                 <div

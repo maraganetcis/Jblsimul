@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { Play, TrendingUp, Trophy, Award, Building, Activity, Zap, Users } from 'lucide-react';
+import { Play, TrendingUp, Trophy, Award, Activity, Zap, Users, ArrowLeftRight } from 'lucide-react';
 import { Team, Player, ScheduleItem } from '../types/baseball';
 
 interface DashboardViewProps {
@@ -15,6 +15,7 @@ interface DashboardViewProps {
   opponentTeam?: Team;
   onStartMatch: () => void;
   onNavigateTo: (tab: any) => void;
+  onOpenTeamSelect: () => void;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -25,6 +26,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   opponentTeam,
   onStartMatch,
   onNavigateTo,
+  onOpenTeamSelect,
 }) => {
   // 팀 랭킹 계산
   const sortedTeams = [...allTeams].sort((a, b) => {
@@ -120,8 +122,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           </div>
 
-          {/* Quick CTA to Live Game */}
+          {/* Quick CTA to Live Game & Switch Team */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+            <button
+              onClick={onOpenTeamSelect}
+              className="flex items-center justify-center gap-2 px-4 py-3.5 rounded-xl bg-white/15 hover:bg-white/25 text-white border border-white/30 font-display font-bold text-xs shadow-sm transition-all"
+            >
+              <ArrowLeftRight className="w-4 h-4" />
+              구단 선택·변경
+            </button>
             <button
               onClick={onStartMatch}
               className="flex items-center justify-center gap-2 px-6 py-3.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-display font-bold text-sm shadow-lg transition-all hover:scale-[1.02] active:scale-[0.98]"

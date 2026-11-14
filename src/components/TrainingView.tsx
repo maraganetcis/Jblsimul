@@ -4,13 +4,17 @@
  */
 
 import React, { useState } from 'react';
-import { Dumbbell, Zap, TrendingUp, Building, Award, CheckCircle, ArrowRight } from 'lucide-react';
-import { Player, Team } from '../types/baseball';
+import { Dumbbell, Building, CheckCircle, AlertTriangle, Sparkles, PlayCircle, Users } from 'lucide-react';
+import { AutoGrowthLog, Player, Team } from '../types/baseball';
 import { soundEffects } from '../utils/audio';
 
 interface TrainingViewProps {
   userTeam: Team;
   roster: Player[];
+  autoTrainingEnabled: boolean;
+  onToggleAutoTraining: () => void;
+  onRunLeagueAutoTraining: () => void;
+  growthLogs: AutoGrowthLog[];
   onUpdateTeam: (team: Team) => void;
   onUpdateRoster: (roster: Player[]) => void;
   onOpenPlayerDetail: (player: Player) => void;
@@ -19,21 +23,31 @@ interface TrainingViewProps {
 export const TrainingView: React.FC<TrainingViewProps> = ({
   userTeam,
   roster,
+  autoTrainingEnabled,
+  onToggleAutoTraining,
+  onRunLeagueAutoTraining,
+  growthLogs,
   onUpdateTeam,
   onUpdateRoster,
   onOpenPlayerDetail,
 }) => {
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>(roster[0]?.id || '');
-  const [trainToast, setTrainToast] = useState<string | null>(null);
+  const [trainToast, setTrainToast] = useState<{ type: 'SUCCESS' | 'ERROR'; text: string } | null>(null);
+  const [showOnlyMyTeamLogs, setShowOnlyMyTeamLogs] = useState<boolean>(false);
 
   const selectedPlayer = roster.find(p => p.id === selectedPlayerId) || roster[0];
+
+  const showToast = (type: 'SUCCESS' | 'ERROR', text: string) => {
+    setTrainToast({ type, text });
+    setTimeout(() => setTrainToast(null), 3000);
+  };
 
   // 구단 훈련 시설 업그레이드
   const handleUpgradeFacility = (key: keyof Team['facilityLevels']) => {
     const currentLvl = userTeam.facilityLevels[key];
     const cost = (currentLvl + 1) * 30000; // 3억원, 6억원...
     if (userTeam.budget < cost) {
-      alert('구단 예산이 부족합니다!');
+      showToast('ERROR', `구단 예산이 부족합니다! (필요 자금: ${(cost / 10000).toLocaleString()}억원)`);
       return;
     }
 
@@ -47,14 +61,14 @@ export const TrainingView: React.FC<TrainingViewProps> = ({
     };
     onUpdateTeam(updatedTeam);
     soundEffects.playCrowdCheer(false);
-    setTrainToast(`시설 업그레이드 완료! (레벨 ${currentLvl + 1})`);
-    setTimeout(() => setTrainToast(null), 2500);
+    showToast('SUCCESS', `시설 업그레이드 완료! (레벨 ${currentLvl + 1})`);
   };
 
   // 선수 개별 특훈 실행
   const handleTrainPlayer = (statKey: string, boostAmount: number, cost: number) => {
+    if (!selectedPlayer) return;
     if (userTeam.budget < cost) {
-      alert('훈련 비용(구단 자금)이 부족합니다!');
+      showToast('ERROR', `훈련 비용이 부족합니다! (필요 자금: ${(cost / 10000).toLocaleString()}억원)`);
       return;
     }
 
@@ -76,7 +90,7 @@ export const TrainingView: React.FC<TrainingViewProps> = ({
       } else if (p.role === 'PITCHER' && updatedPlayer.pitcherStats) {
         const ps = { ...updatedPlayer.pitcherStats };
         if (statKey === 'velocity') {
-          ps.velocity = Math.min(160, ps.velocity + 1);
+          ps.velocity = Math.min(162, ps.velocity + 1);
         } else if (statKey === 'control') {
           ps.control = Math.min(99, ps.control + boostAmount);
         } else if (statKey === 'stuff') {
@@ -98,17 +112,30 @@ export const TrainingView: React.FC<TrainingViewProps> = ({
     onUpdateTeam(updatedTeam);
     onUpdateRoster(updatedRoster);
     soundEffects.playBatHit(false, 80);
-    setTrainToast(`${selectedPlayer.name} 선수의 훈련 완료! 능력치가 상승했습니다.`);
-    setTimeout(() => setTrainToast(null), 2500);
+    showToast('SUCCESS', `${selectedPlayer.name} 선수의 특훈 완료! 능력치가 상승했습니다.`);
   };
+
+  const visibleLogs = showOnlyMyTeamLogs
+    ? growthLogs.filter(g => g.teamId === userTeam.id)
+    : growthLogs;
 
   return (
     <div className="space-y-6 pb-12">
       {/* Toast */}
       {trainToast && (
-        <div className="p-3 bg-emerald-50 border border-emerald-300 rounded-xl text-emerald-800 text-xs font-semibold flex items-center gap-2 shadow-sm animate-bounce">
-          <CheckCircle className="w-4 h-4 text-emerald-600" />
-          {trainToast}
+        <div
+          className={`p-3 rounded-xl text-xs font-semibold flex items-center gap-2 shadow-sm border ${
+            trainToast.type === 'SUCCESS'
+              ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+              : 'bg-rose-50 border-rose-300 text-rose-800'
+          }`}
+        >
+          {trainToast.type === 'SUCCESS' ? (
+            <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+          ) : (
+            <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+          )}
+          {trainToast.text}
         </div>
       )}
 
@@ -116,10 +143,10 @@ export const TrainingView: React.FC<TrainingViewProps> = ({
       <div className="bg-white border border-sky-100 rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-sm">
         <div>
           <h2 className="text-xl font-display font-bold text-slate-900 flex items-center gap-2">
-            <Dumbbell className="w-5 h-5 text-sky-600" /> 선수 육성 & 클럽 하우스 트레이닝 센터
+            <Dumbbell className="w-5 h-5 text-sky-600" /> 전 구단 자동 육성 & 클럽 하우스 트레이닝 센터
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            구단 훈련 시설을 업그레이드하고 유망주와 주전 선수들에게 맞춤형 집중 훈련을 지시하세요.
+            모든 10개 구단(1군·2군)의 선수들이 잠재력·나이·훈련 시설에 따라 매일 자동으로 경험치를 얻고 레벨업하며 성장합니다.
           </p>
         </div>
         <div className="bg-sky-50 px-4 py-2 rounded-xl border border-sky-200 text-right">
@@ -127,6 +154,95 @@ export const TrainingView: React.FC<TrainingViewProps> = ({
           <span className="text-base font-mono-numbers font-bold text-sky-700">
             {(userTeam.budget / 10000).toLocaleString()} 억원
           </span>
+        </div>
+      </div>
+
+      {/* Auto-Development Control & League Growth Feed */}
+      <div className="bg-white border border-sky-100 rounded-2xl p-5 shadow-sm space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div>
+            <h3 className="font-display font-bold text-sm text-slate-900 flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-amber-500" /> 전 10개 구단 선수 자동 육성 엔진
+            </h3>
+            <p className="text-xs text-slate-500 mt-0.5">
+              경기 종료 시마다 모든 구단 선수들이 자동 훈련을 수행하며, 급성장한 2군 유망주는 알림창으로 1군 콜업 결재를 요청합니다.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={onToggleAutoTraining}
+              className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition-colors ${
+                autoTrainingEnabled
+                  ? 'bg-emerald-50 border-emerald-300 text-emerald-800 hover:bg-emerald-100'
+                  : 'bg-slate-100 border-slate-200 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              자동 육성: {autoTrainingEnabled ? 'ON (매일 자동 실행)' : 'OFF (수동)'}
+            </button>
+            <button
+              onClick={() => {
+                onRunLeagueAutoTraining();
+                soundEffects.playCrowdCheer(false);
+                showToast('SUCCESS', '전 10개 구단 선수단 1일 자동 육성 캠프가 완료되었습니다!');
+              }}
+              className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold shadow-sm transition-colors"
+            >
+              <PlayCircle className="w-3.5 h-3.5" /> 전 구단 1일 자동 육성 즉시 실행
+            </button>
+          </div>
+        </div>
+
+        {/* Growth Logs */}
+        <div className="bg-sky-50/50 border border-sky-100 rounded-xl p-3.5 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold text-sky-900 flex items-center gap-1.5">
+              <Users className="w-3.5 h-3.5 text-sky-600" /> 최근 자동 레벨업 · 능력치 성장 리포트 ({visibleLogs.length}건)
+            </span>
+            <div className="flex items-center gap-1 bg-white p-0.5 rounded-lg border border-sky-200 text-[11px]">
+              <button
+                onClick={() => setShowOnlyMyTeamLogs(false)}
+                className={`px-2 py-0.5 rounded font-semibold ${!showOnlyMyTeamLogs ? 'bg-sky-500 text-white' : 'text-slate-600'}`}
+              >
+                전체 구단
+              </button>
+              <button
+                onClick={() => setShowOnlyMyTeamLogs(true)}
+                className={`px-2 py-0.5 rounded font-semibold ${showOnlyMyTeamLogs ? 'bg-sky-500 text-white' : 'text-slate-600'}`}
+              >
+                {userTeam.name}만
+              </button>
+            </div>
+          </div>
+
+          <div className="max-h-44 overflow-y-auto space-y-1.5">
+            {visibleLogs.length === 0 ? (
+              <p className="text-xs text-slate-400 py-4 text-center">
+                아직 레벨업 기록이 없습니다. 경기를 진행하거나 위 [전 구단 1일 자동 육성 즉시 실행]을 눌러보세요!
+              </p>
+            ) : (
+              visibleLogs.slice(0, 30).map(log => (
+                <div
+                  key={log.id}
+                  className="flex flex-wrap items-center justify-between gap-2 bg-white px-3 py-2 rounded-lg border border-sky-100 text-xs"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-mono-numbers text-slate-400">
+                      {log.seasonNumber}회 {log.day}일
+                    </span>
+                    <span className="px-1.5 py-0.5 rounded bg-sky-50 text-sky-800 font-bold text-[10px] border border-sky-200">
+                      {log.teamName}
+                    </span>
+                    <span className="font-bold text-slate-900">{log.playerName}</span>
+                    <span className="text-[11px] text-slate-500">({log.position})</span>
+                  </div>
+                  <div className="flex items-center gap-2 font-mono-numbers">
+                    <span className="text-amber-600 font-bold">Lv.{log.newLevel} 달성</span>
+                    <span className="text-emerald-600 font-bold">{log.statGainText}</span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
         </div>
       </div>
 

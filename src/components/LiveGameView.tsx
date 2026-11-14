@@ -724,6 +724,73 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Batter Substitution (Pinch Hitter) Modal */}
+      {showBatterSubModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white border border-sky-100 rounded-2xl max-w-lg w-full p-5 shadow-2xl">
+            <h3 className="text-base font-bold text-slate-900 mb-2">대타로 투입할 야수 선택</h3>
+            <div className="max-h-60 overflow-y-auto space-y-2">
+              {allRoster
+                .filter(p => p.role === 'BATTER' && p.id !== currentBatter?.id)
+                .map(batter => (
+                  <div
+                    key={batter.id}
+                    onClick={() => {
+                      const updated = { ...gameState };
+                      if (gameState.isTop) {
+                        const order = [...updated.battingOrderAway];
+                        const idx = updated.orderIndexAway % order.length;
+                        order[idx] = batter;
+                        updated.battingOrderAway = order;
+                      } else {
+                        const order = [...updated.battingOrderHome];
+                        const idx = updated.orderIndexHome % order.length;
+                        order[idx] = batter;
+                        updated.battingOrderHome = order;
+                      }
+                      updated.playLogs = [
+                        {
+                          id: `sub_b_${Date.now()}`,
+                          inning: gameState.inning,
+                          isTop: gameState.isTop,
+                          batterName: batter.name,
+                          pitcherName: currentPitcher.name,
+                          balls: gameState.balls,
+                          strikes: gameState.strikes,
+                          outs: gameState.outs,
+                          description: `🔄 대타 작전! ${currentBatter?.name} 대신 ${batter.name}(${batter.primaryPosition}) 타자가 타석에 들어섭니다.`,
+                          highlightType: 'TACTIC',
+                        },
+                        ...gameState.playLogs,
+                      ];
+                      onUpdateGameState(updated);
+                      setShowBatterSubModal(false);
+                    }}
+                    className="p-3 bg-sky-50/60 hover:bg-sky-100 border border-sky-100 rounded-xl cursor-pointer flex items-center justify-between text-xs"
+                  >
+                    <div>
+                      <span className="font-bold text-sm text-slate-900">{batter.name}</span>
+                      <span className="text-slate-500 ml-2">포지션: {batter.primaryPosition} · {batter.tier === 'FIRST_TEAM' ? '1군' : '2군'}</span>
+                    </div>
+                    <div className="text-right font-mono-numbers">
+                      <span className="text-emerald-600 font-bold">컨택 {batter.batterStats?.contact}</span>
+                      <span className="text-slate-500 block">파워 {batter.batterStats?.power}</span>
+                    </div>
+                  </div>
+                ))}
+            </div>
+            <div className="mt-4 pt-3 border-t border-slate-100 text-right">
+              <button
+                onClick={() => setShowBatterSubModal(false)}
+                className="px-4 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-600 hover:bg-slate-100"
+              >
+                취소
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

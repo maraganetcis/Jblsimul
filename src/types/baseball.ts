@@ -150,6 +150,35 @@ export interface PlayLogEntry {
   highlightType?: 'HIT' | 'HOMERUN' | 'OUT' | 'STRIKEOUT' | 'WALK' | 'RUN' | 'TACTIC';
 }
 
+export interface PlayerGameBoxStat {
+  playerId: string;
+  teamId: string;
+  role: 'BATTER' | 'PITCHER';
+  atBats: number;
+  hits: number;
+  doubles: number;
+  triples: number;
+  homeRuns: number;
+  rbi: number;
+  runs: number;
+  walks: number;
+  strikeouts: number;
+  stolenBases: number;
+  caughtStealing: number;
+  gamesStarted: number;
+  inningsOuts: number;
+  wins: number;
+  losses: number;
+  saves: number;
+  holds: number;
+  earnedRuns: number;
+  hitsAllowed: number;
+  walksAllowed: number;
+  pitcherStrikeouts: number;
+  homeRunsAllowed: number;
+  pitchesCount: number;
+}
+
 export interface LiveGameState {
   gameId: string;
   isUserGame: boolean;
@@ -192,6 +221,8 @@ export interface LiveGameState {
 
   pitchCountAway: number;
   pitchCountHome: number;
+
+  playerBoxStats: Record<string, PlayerGameBoxStat>;
 
   lastPitch?: PitchResult;
   playLogs: PlayLogEntry[];
@@ -253,5 +284,36 @@ export interface MatchRecord {
   awayErrors: number;
   homeErrors: number;
   summary: string;
+  isUserMatch?: boolean;
+}
+
+export type ApprovalCategory = 'TRADE_INCOMING' | 'TRADE_LEAGUE' | 'PROMOTION_RECOMMEND';
+
+export interface PendingApproval {
+  id: string;
+  category: ApprovalCategory;
+  title: string;
+  subtitle: string;
+  createdAtDay: number;
+  seasonNumber: number;
+  fromTeamId: string;
+  toTeamId: string;
+  offeredPlayer?: Player;
+  requestedPlayer?: Player;
+  targetPlayer?: Player;
+  evaluationSummary: string;
+}
+
+export interface AutoGrowthLog {
+  id: string;
+  day: number;
+  seasonNumber: number;
+  teamId: string;
+  teamName: string;
+  playerId: string;
+  playerName: string;
+  position: Position;
+  newLevel: number;
+  statGainText: string;
 }
 

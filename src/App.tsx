@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Header, ActiveTab } from './components/Header';
 import { DashboardView } from './components/DashboardView';
 import { LiveGameView } from './components/LiveGameView';
@@ -15,14 +15,32 @@ import { StandingsRecordView } from './components/StandingsRecordView';
 import { GoogleSheetsView } from './components/GoogleSheetsView';
 import { TeamSelectorModal } from './components/TeamSelectorModal';
 import { PlayerDetailModal } from './components/PlayerDetailModal';
+import { ApprovalModal } from './components/ApprovalModal';
 
-import { Team, Player, LiveGameState, ScheduleItem, DraftProspect, HistorySeason, MatchRecord } from './types/baseball';
+import {
+  AutoGrowthLog,
+  DraftProspect,
+  HistorySeason,
+  LiveGameState,
+  MatchRecord,
+  PendingApproval,
+  Player,
+  Team,
+} from './types/baseball';
 import { INITIAL_JBL_TEAMS, JBL_HISTORICAL_CHAMPIONS, generateAllLeaguePlayers, generateDraftProspects } from './data/initialLeagueData';
-import { createNewGame } from './utils/simulationEngine';
-import { sendPayloadToGoogleAppsScript, GameExportPayload } from './utils/appsScriptGenerator';
+import {
+  autoDevelopAllLeaguePlayers,
+  createNewGame,
+  generateDailyApprovals,
+  mergeGameStatsIntoPlayersMap,
+  simulateCpuMatch,
+} from './utils/simulationEngine';
+import { sendPayloadToGoogleAppsScript, GameExportPayload, PulledSheetSyncData } from './utils/appsScriptGenerator';
 
 const SAVE_KEY = 'jbl_baseball_manager_save_v1';
 const WEBHOOK_KEY = 'jbl_sheets_webhook_url';
+const DEFAULT_WEBHOOK_URL =
+  'https://script.google.com/macros/s/AKfycbzTrjYzCYE7pFz29osMUdXTjtoFeYkAeE2XweBSje0zxaeJP6vK1i5lyVhWd5raukY7sw/exec';
 
 export default function App() {
   const [teams, setTeams] = useState<Team[]>(INITIAL_JBL_TEAMS);
@@ -36,21 +54,33 @@ export default function App() {
   const [tradeLogs, setTradeLogs] = useState<Array<{ date: string; description: string }>>([]);
   const [draftLogs, setDraftLogs] = useState<Array<{ round: number; pickNumber: number; teamName: string; playerName: string; position: string; school: string }>>([]);
   const [matchHistory, setMatchHistory] = useState<MatchRecord[]>([]);
-  const [historicalChampions] = useState<HistorySeason[]>(JBL_HISTORICAL_CHAMPIONS);
+  const [historicalChampions, setHistoricalChampions] = useState<HistorySeason[]>(JBL_HISTORICAL_CHAMPIONS);
 
-  const [webhookUrl, setWebhookUrl] = useState<string>('');
+  const [webhookUrl, setWebhookUrl] = useState<string>(DEFAULT_WEBHOOK_URL);
   const [showTeamSelectModal, setShowTeamSelectModal] = useState<boolean>(false);
   const [inspectingPlayer, setInspectingPlayer] = useState<Player | null>(null);
+
+  // League-wide Auto-Development & Manager Approval Notifications
+  const [autoTrainingEnabled, setAutoTrainingEnabled] = useState<boolean>(true);
+  const [growthLogs, setGrowthLogs] = useState<AutoGrowthLog[]>([]);
+  const [pendingApprovals, setPendingApprovals] = useState<PendingApproval[]>([]);
+  const [showApprovalModal, setShowApprovalModal] = useState<boolean>(false);
 
   // Active Live Game State
   const [liveGame, setLiveGame] = useState<LiveGameState | null>(null);
   const [quickSyncToast, setQuickSyncToast] = useState<string | null>(null);
+  const hasLoadedRef = useRef(false);
 
-  // 1. Load from localStorage
+  // 1. Load from localStorage on mount
   useEffect(() => {
     try {
       const savedUrl = localStorage.getItem(WEBHOOK_KEY);
-      if (savedUrl) setWebhookUrl(savedUrl);
+      if (savedUrl && savedUrl.trim()) {
+        setWebhookUrl(savedUrl);
+      } else {
+        localStorage.setItem(WEBHOOK_KEY, DEFAULT_WEBHOOK_URL);
+        setWebhookUrl(DEFAULT_WEBHOOK_URL);
+      }
 
       const savedData = localStorage.getItem(SAVE_KEY);
       if (savedData) {
@@ -65,15 +95,59 @@ export default function App() {
           if (parsed.tradeLogs) setTradeLogs(parsed.tradeLogs);
           if (parsed.draftLogs) setDraftLogs(parsed.draftLogs);
           if (parsed.matchHistory) setMatchHistory(parsed.matchHistory);
+          if (parsed.historicalChampions) setHistoricalChampions(parsed.historicalChampions);
+          if (typeof parsed.autoTrainingEnabled === 'boolean') setAutoTrainingEnabled(parsed.autoTrainingEnabled);
+          if (Array.isArray(parsed.growthLogs)) setGrowthLogs(parsed.growthLogs);
+          if (Array.isArray(parsed.pendingApprovals)) setPendingApprovals(parsed.pendingApprovals);
         }
       } else {
-        // First time launch: prompt team selector
         setShowTeamSelectModal(true);
       }
     } catch (e) {
       console.warn('Failed to load local storage save:', e);
+    } finally {
+      hasLoadedRef.current = true;
     }
   }, []);
+
+  // 2. Reliable Auto-Save whenever league state changes
+  useEffect(() => {
+    if (!hasLoadedRef.current) return;
+    try {
+      const stateToSave = {
+        teams,
+        selectedTeamId,
+        playersMap,
+        prospects,
+        seasonNumber,
+        currentDay,
+        tradeLogs,
+        draftLogs,
+        matchHistory,
+        historicalChampions,
+        autoTrainingEnabled,
+        growthLogs,
+        pendingApprovals,
+      };
+      localStorage.setItem(SAVE_KEY, JSON.stringify(stateToSave));
+    } catch (e) {
+      console.warn('Failed to auto-save to local storage:', e);
+    }
+  }, [
+    teams,
+    selectedTeamId,
+    playersMap,
+    prospects,
+    seasonNumber,
+    currentDay,
+    tradeLogs,
+    draftLogs,
+    matchHistory,
+    historicalChampions,
+    autoTrainingEnabled,
+    growthLogs,
+    pendingApprovals,
+  ]);
 
   const userTeam = teams.find(t => t.id === selectedTeamId) || teams[0];
   const userRoster = playersMap[userTeam.id] || [];
@@ -82,7 +156,7 @@ export default function App() {
   const otherTeams = teams.filter(t => t.id !== userTeam.id);
   const currentOpponent = otherTeams[(currentDay - 1) % otherTeams.length];
 
-  // 2. Save Game State
+  // Manual Save Trigger
   const handleSaveGame = () => {
     try {
       const stateToSave = {
@@ -95,6 +169,10 @@ export default function App() {
         tradeLogs,
         draftLogs,
         matchHistory,
+        historicalChampions,
+        autoTrainingEnabled,
+        growthLogs,
+        pendingApprovals,
       };
       localStorage.setItem(SAVE_KEY, JSON.stringify(stateToSave));
     } catch (e) {
@@ -108,10 +186,11 @@ export default function App() {
       setActiveTab('SHEETS');
       return;
     }
-    setQuickSyncToast('Google Apps Script로 동기화 전송 중...');
+    setQuickSyncToast('Google Apps Script로 전체 리그 동기화 전송 중...');
     const payload: GameExportPayload = {
       exportDate: new Date().toLocaleString('ko-KR'),
       seasonNumber,
+      currentDay,
       userTeam,
       allTeams: teams,
       userRoster,
@@ -123,84 +202,159 @@ export default function App() {
     };
     const res = await sendPayloadToGoogleAppsScript(webhookUrl, payload);
     setQuickSyncToast(res.message);
-    setTimeout(() => setQuickSyncToast(null), 3000);
+    setTimeout(() => setQuickSyncToast(null), 3500);
   };
 
   // 4. Start Match
   const handleStartMatch = () => {
     const opponentRoster = playersMap[currentOpponent.id] || [];
-    const newGame = createNewGame(currentOpponent, userTeam, opponentRoster, userRoster);
+    const newGame = createNewGame(currentOpponent, userTeam, opponentRoster, userRoster, {
+      isUserGame: true,
+      rotationDay: currentDay,
+    });
     setLiveGame(newGame);
     setActiveTab('LIVE_GAME');
   };
 
-  // 5. Finish Match & Apply Stats
+  // 5. Finish Match: Apply user match + simulate remaining 8 teams' daily games
   const handleFinishMatch = (finalState: LiveGameState) => {
-    const awayWon = finalState.score.away > finalState.score.home;
-    const homeWon = finalState.score.home > finalState.score.away;
-    const isDraw = finalState.score.away === finalState.score.home;
+    let nextPlayersMap = mergeGameStatsIntoPlayersMap(playersMap, finalState);
+    const teamStatDeltas: Record<string, { w: number; l: number; d: number; rs: number; ra: number; budget: number }> = {};
 
-    // Update Team Records
-    const updatedTeams = teams.map(t => {
-      if (t.id === finalState.awayTeam.id) {
-        return {
-          ...t,
-          wins: t.wins + (awayWon ? 1 : 0),
-          losses: t.losses + (homeWon ? 1 : 0),
-          draws: t.draws + (isDraw ? 1 : 0),
-          runsScored: t.runsScored + finalState.score.away,
-          runsAllowed: t.runsAllowed + finalState.score.home,
-          budget: t.budget + (awayWon ? 2000 : 800), // 승리 수당
-        };
-      }
-      if (t.id === finalState.homeTeam.id) {
-        return {
-          ...t,
-          wins: t.wins + (homeWon ? 1 : 0),
-          losses: t.losses + (awayWon ? 1 : 0),
-          draws: t.draws + (isDraw ? 1 : 0),
-          runsScored: t.runsScored + finalState.score.home,
-          runsAllowed: t.runsAllowed + finalState.score.away,
-          budget: t.budget + (homeWon ? 2000 : 800),
-        };
-      }
-      return t;
-    });
+    const recordGameToDeltas = (game: LiveGameState) => {
+      const awayWon = game.score.away > game.score.home;
+      const homeWon = game.score.home > game.score.away;
+      const isDraw = game.score.away === game.score.home;
 
-    const isUserHome = userTeam.id === finalState.homeTeam.id;
-    const userScore = isUserHome ? finalState.score.home : finalState.score.away;
-    const oppScore = isUserHome ? finalState.score.away : finalState.score.home;
-    const matchResult = userScore > oppScore ? 'WIN' : userScore < oppScore ? 'LOSS' : 'DRAW';
-    const winTeamName = finalState.winningTeamId === finalState.homeTeam.id
-      ? finalState.homeTeam.name
-      : finalState.winningTeamId === finalState.awayTeam.id
-      ? finalState.awayTeam.name
-      : '무승부';
+      const awayDelta = teamStatDeltas[game.awayTeam.id] || { w: 0, l: 0, d: 0, rs: 0, ra: 0, budget: 0 };
+      awayDelta.w += awayWon ? 1 : 0;
+      awayDelta.l += homeWon ? 1 : 0;
+      awayDelta.d += isDraw ? 1 : 0;
+      awayDelta.rs += game.score.away;
+      awayDelta.ra += game.score.home;
+      awayDelta.budget += awayWon ? 2000 : 800;
+      teamStatDeltas[game.awayTeam.id] = awayDelta;
 
-    const newRecord: MatchRecord = {
-      id: `match_${Date.now()}`,
-      day: currentDay,
-      seasonNumber,
-      dateStr: new Date().toLocaleDateString('ko-KR'),
-      awayTeamName: finalState.awayTeam.name,
-      homeTeamName: finalState.homeTeam.name,
-      awayScore: finalState.score.away,
-      homeScore: finalState.score.home,
-      result: matchResult,
-      winningTeamName: winTeamName,
-      awayHits: finalState.hits.away,
-      homeHits: finalState.hits.home,
-      awayErrors: finalState.errors.away,
-      homeErrors: finalState.errors.home,
-      summary: `${finalState.awayTeam.name} ${finalState.score.away} : ${finalState.score.home} ${finalState.homeTeam.name} (${finalState.inning}이닝 경기)`,
+      const homeDelta = teamStatDeltas[game.homeTeam.id] || { w: 0, l: 0, d: 0, rs: 0, ra: 0, budget: 0 };
+      homeDelta.w += homeWon ? 1 : 0;
+      homeDelta.l += awayWon ? 1 : 0;
+      homeDelta.d += isDraw ? 1 : 0;
+      homeDelta.rs += game.score.home;
+      homeDelta.ra += game.score.away;
+      homeDelta.budget += homeWon ? 2000 : 800;
+      teamStatDeltas[game.homeTeam.id] = homeDelta;
     };
 
-    setMatchHistory(prev => [newRecord, ...prev]);
+    const buildMatchRecord = (game: LiveGameState, isUserMatch: boolean): MatchRecord => {
+      const isUserHome = userTeam.id === game.homeTeam.id;
+      const refScoreA = isUserMatch ? (isUserHome ? game.score.home : game.score.away) : game.score.home;
+      const refScoreB = isUserMatch ? (isUserHome ? game.score.away : game.score.home) : game.score.away;
+      const matchResult = refScoreA > refScoreB ? 'WIN' : refScoreA < refScoreB ? 'LOSS' : 'DRAW';
+      const winTeamName =
+        game.winningTeamId === game.homeTeam.id
+          ? game.homeTeam.name
+          : game.winningTeamId === game.awayTeam.id
+          ? game.awayTeam.name
+          : '무승부';
+
+      return {
+        id: `match_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        day: currentDay,
+        seasonNumber,
+        dateStr: new Date().toLocaleDateString('ko-KR'),
+        awayTeamName: game.awayTeam.name,
+        homeTeamName: game.homeTeam.name,
+        awayScore: game.score.away,
+        homeScore: game.score.home,
+        result: matchResult,
+        winningTeamName: winTeamName,
+        awayHits: game.hits.away,
+        homeHits: game.hits.home,
+        awayErrors: game.errors.away,
+        homeErrors: game.errors.home,
+        summary: `${game.awayTeam.name} ${game.score.away} : ${game.score.home} ${game.homeTeam.name} (${game.inning}이닝 경기)`,
+        isUserMatch,
+      };
+    };
+
+    recordGameToDeltas(finalState);
+    const todayRecords: MatchRecord[] = [buildMatchRecord(finalState, true)];
+
+    // Simulate remaining 8 teams (4 matchups) silently for full-league standings & stats
+    const remainingTeams = teams.filter(t => t.id !== finalState.homeTeam.id && t.id !== finalState.awayTeam.id);
+    const rotated = [...remainingTeams];
+    const shift = currentDay % Math.max(1, rotated.length);
+    const orderedRemaining = [...rotated.slice(shift), ...rotated.slice(0, shift)];
+
+    for (let i = 0; i + 1 < orderedRemaining.length; i += 2) {
+      const awayT = orderedRemaining[i];
+      const homeT = orderedRemaining[i + 1];
+      const cpuGame = simulateCpuMatch(
+        awayT,
+        homeT,
+        nextPlayersMap[awayT.id] || [],
+        nextPlayersMap[homeT.id] || [],
+        currentDay
+      );
+      nextPlayersMap = mergeGameStatsIntoPlayersMap(nextPlayersMap, cpuGame);
+      recordGameToDeltas(cpuGame);
+      todayRecords.push(buildMatchRecord(cpuGame, false));
+    }
+
+    const updatedTeams = teams.map(t => {
+      const d = teamStatDeltas[t.id];
+      if (!d) return t;
+      return {
+        ...t,
+        wins: t.wins + d.w,
+        losses: t.losses + d.l,
+        draws: t.draws + d.d,
+        runsScored: t.runsScored + d.rs,
+        runsAllowed: t.runsAllowed + d.ra,
+        budget: t.budget + d.budget,
+      };
+    });
+
+    // 5.5 전 구단 선수 자동 육성 & 트레이드/콜업 결재 알림 생성
+    let newGrowthLogs: AutoGrowthLog[] = [];
+    if (autoTrainingEnabled) {
+      const devResult = autoDevelopAllLeaguePlayers(nextPlayersMap, updatedTeams, seasonNumber, currentDay);
+      nextPlayersMap = devResult.nextPlayersMap;
+      newGrowthLogs = devResult.growthLogs;
+      if (newGrowthLogs.length > 0) {
+        setGrowthLogs(prev => [...newGrowthLogs, ...prev].slice(0, 100));
+      }
+    }
+
+    const dailyApprovals = generateDailyApprovals(
+      updatedTeams,
+      nextPlayersMap,
+      userTeam.id,
+      seasonNumber,
+      currentDay,
+      newGrowthLogs
+    );
+
+    setPlayersMap(nextPlayersMap);
+    setMatchHistory(prev => [...todayRecords, ...prev]);
     setTeams(updatedTeams);
     setCurrentDay(prev => prev + 1);
     setLiveGame(null);
     setActiveTab('DASHBOARD');
-    handleSaveGame();
+
+    if (dailyApprovals.length > 0) {
+      setPendingApprovals(prev => [...dailyApprovals, ...prev]);
+      setShowApprovalModal(true);
+    }
+  };
+
+  // Manual trigger for 1-day League Auto Training Camp
+  const handleRunLeagueAutoTraining = () => {
+    const devResult = autoDevelopAllLeaguePlayers(playersMap, teams, seasonNumber, currentDay);
+    setPlayersMap(devResult.nextPlayersMap);
+    if (devResult.growthLogs.length > 0) {
+      setGrowthLogs(prev => [...devResult.growthLogs, ...prev].slice(0, 100));
+    }
   };
 
   // 6. Handle Trade Execution
@@ -208,18 +362,75 @@ export default function App() {
     const updatedUserRoster = userRoster.map(p => p.id === myPlayer.id ? { ...theirPlayer, teamId: userTeam.id } : p);
     const theirRoster = (playersMap[theirTeamId] || []).map(p => p.id === theirPlayer.id ? { ...myPlayer, teamId: theirTeamId } : p);
 
-    const newPlayersMap = {
-      ...playersMap,
+    setPlayersMap(prev => ({
+      ...prev,
       [userTeam.id]: updatedUserRoster,
       [theirTeamId]: theirRoster,
-    };
-
-    setPlayersMap(newPlayersMap);
+    }));
     setTradeLogs(prev => [
       { date: `${seasonNumber}회차 ${currentDay}일`, description: logDesc },
       ...prev,
     ]);
-    handleSaveGame();
+  };
+
+  // 6.5 Handle Approval Notification Modal Approve / Reject
+  const handleApprovePending = (approval: PendingApproval) => {
+    if (
+      (approval.category === 'TRADE_INCOMING' || approval.category === 'TRADE_LEAGUE') &&
+      approval.offeredPlayer &&
+      approval.requestedPlayer
+    ) {
+      const fromTeam = teams.find(t => t.id === approval.fromTeamId);
+      const toTeam = teams.find(t => t.id === approval.toTeamId);
+      const offered = approval.offeredPlayer;
+      const requested = approval.requestedPlayer;
+
+      setPlayersMap(prev => {
+        const fromRoster = (prev[approval.fromTeamId] || []).map(p =>
+          p.id === offered.id ? { ...requested, teamId: approval.fromTeamId } : p
+        );
+        const toRoster = (prev[approval.toTeamId] || []).map(p =>
+          p.id === requested.id ? { ...offered, teamId: approval.toTeamId } : p
+        );
+        return {
+          ...prev,
+          [approval.fromTeamId]: fromRoster,
+          [approval.toTeamId]: toRoster,
+        };
+      });
+
+      const desc = `${fromTeam?.name || '구단'} ${offered.name}(${offered.primaryPosition}) ↔ ${toTeam?.name || '구단'} ${requested.name}(${requested.primaryPosition}) 트레이드 승인 완료!`;
+      setTradeLogs(prev => [
+        { date: `${seasonNumber}회차 ${currentDay}일`, description: desc },
+        ...prev,
+      ]);
+      setQuickSyncToast(`✅ ${desc}`);
+      setTimeout(() => setQuickSyncToast(null), 3500);
+    } else if (approval.category === 'PROMOTION_RECOMMEND' && approval.targetPlayer) {
+      const target = approval.targetPlayer;
+      setPlayersMap(prev => ({
+        ...prev,
+        [approval.fromTeamId]: (prev[approval.fromTeamId] || []).map(p =>
+          p.id === target.id ? { ...p, tier: 'FIRST_TEAM' } : p
+        ),
+      }));
+      setQuickSyncToast(`📣 ${target.name} 선수가 1군 엔트리로 승격 콜업되었습니다!`);
+      setTimeout(() => setQuickSyncToast(null), 3500);
+    }
+
+    setPendingApprovals(prev => {
+      const next = prev.filter(a => a.id !== approval.id);
+      if (next.length === 0) setShowApprovalModal(false);
+      return next;
+    });
+  };
+
+  const handleRejectPending = (approvalId: string) => {
+    setPendingApprovals(prev => {
+      const next = prev.filter(a => a.id !== approvalId);
+      if (next.length === 0) setShowApprovalModal(false);
+      return next;
+    });
   };
 
   // 7. Handle Draft Pick
@@ -231,12 +442,9 @@ export default function App() {
       tier: 'SECOND_TEAM',
     };
 
-    const teamRoster = playersMap[draftingTeam.id] || [];
-    const newTeamRoster = [...teamRoster, draftedPlayer];
-
     setPlayersMap(prev => ({
       ...prev,
-      [draftingTeam.id]: newTeamRoster,
+      [draftingTeam.id]: [...(prev[draftingTeam.id] || []), draftedPlayer],
     }));
 
     setProspects(prev => prev.map(p => p.id === prospect.id ? { ...p, isDrafted: true, draftedByTeamId: draftingTeam.id } : p));
@@ -252,19 +460,132 @@ export default function App() {
       },
       ...prev,
     ]);
-    handleSaveGame();
   };
 
-  // 8. Restore from JSON Backup
+  // 8. Save / Delete single player from PlayerDetailModal
+  const handleSaveEditedPlayer = (updatedPlayer: Player) => {
+    setPlayersMap(prev => {
+      const roster = prev[updatedPlayer.teamId] || [];
+      return {
+        ...prev,
+        [updatedPlayer.teamId]: roster.map(p => p.id === updatedPlayer.id ? updatedPlayer : p),
+      };
+    });
+    setInspectingPlayer(updatedPlayer);
+  };
+
+  const handleDeletePlayer = (playerId: string, teamId: string) => {
+    setPlayersMap(prev => ({
+      ...prev,
+      [teamId]: (prev[teamId] || []).filter(p => p.id !== playerId),
+    }));
+  };
+
+  // 9. Advance to Next Season & Crown Champion
+  const handleAdvanceNextSeason = (championTeamId: string) => {
+    const championTeam = teams.find(t => t.id === championTeamId);
+    if (championTeam) {
+      setHistoricalChampions(prev => [
+        ...prev.filter(h => h.seasonNumber !== seasonNumber),
+        { seasonNumber, champion: championTeam.name },
+      ].sort((a, b) => a.seasonNumber - b.seasonNumber));
+    }
+
+    setTeams(prev => prev.map(t => ({
+      ...t,
+      championships: t.id === championTeamId ? t.championships + 1 : t.championships,
+      wins: 0,
+      losses: 0,
+      draws: 0,
+      runsScored: 0,
+      runsAllowed: 0,
+    })));
+
+    // Reset seasonal counting stats while keeping player attributes, names, positions, levels
+    setPlayersMap(prev => {
+      const next: Record<string, Player[]> = {};
+      Object.keys(prev).forEach(tid => {
+        next[tid] = prev[tid].map(p => ({
+          ...p,
+          age: p.age + 1,
+          batterStats: p.batterStats ? {
+            ...p.batterStats,
+            games: 0, atBats: 0, hits: 0, doubles: 0, triples: 0, homeRuns: 0,
+            rbi: 0, runs: 0, walks: 0, strikeouts: 0, stolenBases: 0, caughtStealing: 0,
+          } : undefined,
+          pitcherStats: p.pitcherStats ? {
+            ...p.pitcherStats,
+            games: 0, gamesStarted: 0, inningsOuts: 0, wins: 0, losses: 0,
+            saves: 0, holds: 0, earnedRuns: 0, hitsAllowed: 0, walksAllowed: 0,
+            strikeouts: 0, homeRunsAllowed: 0, pitchesCount: 0,
+          } : undefined,
+        }));
+      });
+      return next;
+    });
+
+    setProspects(generateDraftProspects());
+    setSeasonNumber(prev => prev + 1);
+    setCurrentDay(1);
+  };
+
+  // 10. Restore from JSON Backup
   const handleRestoreBackup = (payload: GameExportPayload) => {
     if (payload.allTeams) setTeams(payload.allTeams);
     if (payload.userTeam) setSelectedTeamId(payload.userTeam.id);
     if (payload.allPlayers) setPlayersMap(payload.allPlayers);
     if (payload.seasonNumber) setSeasonNumber(payload.seasonNumber);
+    if (payload.currentDay) setCurrentDay(payload.currentDay);
     if (payload.tradeLogs) setTradeLogs(payload.tradeLogs);
     if (payload.draftLogs) setDraftLogs(payload.draftLogs);
-    handleSaveGame();
+    if (payload.matchHistory) setMatchHistory(payload.matchHistory);
+    if (payload.historicalChampions) setHistoricalChampions(payload.historicalChampions);
   };
+
+  // 11. Apply Pulled Google Sheets Data
+  const handleApplyPulledSheetData = (data: PulledSheetSyncData) => {
+    if (data.teams) setTeams(data.teams);
+    if (data.playersMap) setPlayersMap(data.playersMap);
+    if (data.seasonNumber) setSeasonNumber(data.seasonNumber);
+    if (data.currentDay) setCurrentDay(data.currentDay);
+    if (data.selectedTeamId && (data.teams || teams).some(t => t.id === data.selectedTeamId)) {
+      setSelectedTeamId(data.selectedTeamId);
+    }
+    if (data.historicalChampions && data.historicalChampions.length > 0) {
+      setHistoricalChampions(data.historicalChampions);
+    }
+    if (data.matchHistory) setMatchHistory(data.matchHistory);
+    if (data.tradeLogs) setTradeLogs(data.tradeLogs);
+  };
+
+  // 12. Apply CSV/TSV Spreadsheet Importer Updates
+  const handleImportPlayersAndLeague = (updates: {
+    nextPlayersMap?: Record<string, Player[]>;
+    nextSeasonNumber?: number;
+    nextChampions?: HistorySeason[];
+    teamUpdates?: Array<{ name: string; owner?: string; homeStadium?: string; foundedYear?: number; championships?: number }>;
+  }) => {
+    if (updates.nextPlayersMap) setPlayersMap(updates.nextPlayersMap);
+    if (updates.nextSeasonNumber) setSeasonNumber(updates.nextSeasonNumber);
+    if (updates.nextChampions) setHistoricalChampions(updates.nextChampions);
+    if (updates.teamUpdates && updates.teamUpdates.length > 0) {
+      setTeams(prev => prev.map(t => {
+        const match = updates.teamUpdates!.find(u => u.name === t.name);
+        if (!match) return t;
+        return {
+          ...t,
+          owner: match.owner || t.owner,
+          homeStadium: match.homeStadium || t.homeStadium,
+          foundedYear: match.foundedYear ?? t.foundedYear,
+          championships: match.championships ?? t.championships,
+        };
+      }));
+    }
+  };
+
+  const inspectingPlayerTeam = inspectingPlayer
+    ? teams.find(t => t.id === inspectingPlayer.teamId) || userTeam
+    : userTeam;
 
   return (
     <div className="min-h-screen bg-sky-50/40 text-slate-800 flex flex-col font-sans selection:bg-sky-500 selection:text-white">
@@ -279,11 +600,20 @@ export default function App() {
         onQuickSyncSheets={handleQuickSyncSheets}
         hasWebhookUrl={Boolean(webhookUrl)}
         onOpenTeamSelect={() => setShowTeamSelectModal(true)}
+        pendingApprovalsCount={pendingApprovals.length}
+        onOpenApprovals={() => {
+          if (pendingApprovals.length > 0) {
+            setShowApprovalModal(true);
+          } else {
+            setQuickSyncToast('현재 대기 중인 트레이드 · 콜업 결재 안건이 없습니다.');
+            setTimeout(() => setQuickSyncToast(null), 2500);
+          }
+        }}
       />
 
       {/* Quick Sync Notification Toast */}
       {quickSyncToast && (
-        <div className="fixed bottom-6 right-6 z-50 bg-sky-900 border border-sky-400 text-white px-4 py-2.5 rounded-xl text-xs font-semibold shadow-2xl animate-fade-in">
+        <div className="fixed bottom-6 right-6 z-50 bg-sky-900 border border-sky-400 text-white px-4 py-2.5 rounded-xl text-xs font-semibold shadow-2xl">
           {quickSyncToast}
         </div>
       )}
@@ -298,6 +628,7 @@ export default function App() {
             opponentTeam={currentOpponent}
             onStartMatch={handleStartMatch}
             onNavigateTo={setActiveTab}
+            onOpenTeamSelect={() => setShowTeamSelectModal(true)}
           />
         )}
 
@@ -329,10 +660,10 @@ export default function App() {
         {activeTab === 'ROSTER' && (
           <RosterView
             userTeam={userTeam}
-            roster={userRoster}
-            onUpdateRoster={(newRoster) => {
-              setPlayersMap(prev => ({ ...prev, [userTeam.id]: newRoster }));
-              handleSaveGame();
+            allTeams={teams}
+            allPlayers={playersMap}
+            onUpdateTeamRoster={(teamId, newRoster) => {
+              setPlayersMap(prev => ({ ...prev, [teamId]: newRoster }));
             }}
             onOpenPlayerDetail={setInspectingPlayer}
           />
@@ -342,13 +673,15 @@ export default function App() {
           <TrainingView
             userTeam={userTeam}
             roster={userRoster}
+            autoTrainingEnabled={autoTrainingEnabled}
+            onToggleAutoTraining={() => setAutoTrainingEnabled(prev => !prev)}
+            onRunLeagueAutoTraining={handleRunLeagueAutoTraining}
+            growthLogs={growthLogs}
             onUpdateTeam={(newTeam) => {
               setTeams(prev => prev.map(t => t.id === newTeam.id ? newTeam : t));
-              handleSaveGame();
             }}
             onUpdateRoster={(newRoster) => {
               setPlayersMap(prev => ({ ...prev, [userTeam.id]: newRoster }));
-              handleSaveGame();
             }}
             onOpenPlayerDetail={setInspectingPlayer}
           />
@@ -360,6 +693,22 @@ export default function App() {
             allTeams={teams}
             userRoster={userRoster}
             allPlayers={playersMap}
+            pendingApprovalsCount={pendingApprovals.length}
+            onOpenApprovals={() => {
+              if (pendingApprovals.length > 0) {
+                setShowApprovalModal(true);
+              } else {
+                setQuickSyncToast('현재 결재 대기 중인 트레이드 알림이 없습니다.');
+                setTimeout(() => setQuickSyncToast(null), 2500);
+              }
+            }}
+            onQueueTradeApproval={(approval) => {
+              setPendingApprovals(prev => [
+                { ...approval, createdAtDay: currentDay, seasonNumber },
+                ...prev,
+              ]);
+              setShowApprovalModal(true);
+            }}
             onExecuteTrade={handleExecuteTrade}
             onOpenPlayerDetail={setInspectingPlayer}
           />
@@ -380,6 +729,16 @@ export default function App() {
             allTeams={teams}
             allPlayers={playersMap}
             userTeam={userTeam}
+            seasonNumber={seasonNumber}
+            currentDay={currentDay}
+            historicalChampions={historicalChampions}
+            matchHistory={matchHistory}
+            onUpdateSeasonAndDay={(nextSeason, nextDay) => {
+              setSeasonNumber(nextSeason);
+              setCurrentDay(nextDay);
+            }}
+            onAdvanceNextSeason={handleAdvanceNextSeason}
+            onOpenPlayerDetail={setInspectingPlayer}
           />
         )}
 
@@ -390,6 +749,7 @@ export default function App() {
             userRoster={userRoster}
             allPlayers={playersMap}
             seasonNumber={seasonNumber}
+            currentDay={currentDay}
             historicalChampions={historicalChampions}
             tradeLogs={tradeLogs}
             draftLogs={draftLogs}
@@ -400,6 +760,8 @@ export default function App() {
               localStorage.setItem(WEBHOOK_KEY, url);
             }}
             onRestoreBackup={handleRestoreBackup}
+            onApplyPulledSheetData={handleApplyPulledSheetData}
+            onImportPlayersAndLeague={handleImportPlayersAndLeague}
           />
         )}
       </main>
@@ -411,15 +773,28 @@ export default function App() {
         selectedTeamId={selectedTeamId}
         onSelectTeam={(teamId) => {
           setSelectedTeamId(teamId);
-          handleSaveGame();
         }}
         onClose={() => setShowTeamSelectModal(false)}
       />
 
-      {/* Player Detail Modal */}
+      {/* Manager Approval Modal (Trades & Call-ups) */}
+      <ApprovalModal
+        isOpen={showApprovalModal}
+        approvals={pendingApprovals}
+        allTeams={teams}
+        onApprove={handleApprovePending}
+        onReject={handleRejectPending}
+        onClose={() => setShowApprovalModal(false)}
+        onInspectPlayer={setInspectingPlayer}
+      />
+
+      {/* Player Detail & Edit Modal */}
       <PlayerDetailModal
         player={inspectingPlayer}
-        team={userTeam}
+        team={inspectingPlayerTeam}
+        seasonNumber={seasonNumber}
+        onSavePlayer={handleSaveEditedPlayer}
+        onDeletePlayer={handleDeletePlayer}
         onClose={() => setInspectingPlayer(null)}
       />
     </div>
