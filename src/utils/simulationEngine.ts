@@ -3,7 +3,24 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { AutoGrowthLog, LiveGameState, PendingApproval, PitchResult, PlayLogEntry, Player, PlayerGameBoxStat, Team } from '../types/baseball';
+import {
+  AutoGrowthLog,
+  AwardWinnerEntry,
+  FreeAgent,
+  LeagueNewsItem,
+  LiveGameState,
+  PendingApproval,
+  PitchResult,
+  PlayLogEntry,
+  Player,
+  PlayerGameBoxStat,
+  Position,
+  PostseasonSeries,
+  PostseasonState,
+  SeasonAwardRecord,
+  Team,
+} from '../types/baseball';
+import { generatePlayer } from '../data/initialLeagueData';
 import { soundEffects } from './audio';
 
 export type TacticChoice = 'NORMAL' | 'BUNT' | 'STEAL' | 'INTENTIONAL_WALK' | 'HIT_AND_RUN';
@@ -68,25 +85,51 @@ export function createNewGame(
   homeTeam: Team,
   awayRoster: Player[],
   homeRoster: Player[],
-  options?: { isUserGame?: boolean; rotationDay?: number }
+  options?: { isUserGame?: boolean; rotationDay?: number; autoBullpen?: boolean }
 ): LiveGameState {
-  const awayBatters = awayRoster.filter(p => p.role === 'BATTER' && p.tier === 'FIRST_TEAM').slice(0, 9);
-  const homeBatters = homeRoster.filter(p => p.role === 'BATTER' && p.tier === 'FIRST_TEAM').slice(0, 9);
+  const healthyAwayBatters = awayRoster.filter(p => p.role === 'BATTER' && p.tier === 'FIRST_TEAM' && !p.isInjured).slice(0, 9);
+  const healthyHomeBatters = homeRoster.filter(p => p.role === 'BATTER' && p.tier === 'FIRST_TEAM' && !p.isInjured).slice(0, 9);
 
-  // Fallback if roster has fewer than 9 first-team batters
+  const awayBatters =
+    healthyAwayBatters.length >= 9
+      ? healthyAwayBatters
+      : awayRoster.filter(p => p.role === 'BATTER' && !p.isInjured).slice(0, 9);
+  const homeBatters =
+    healthyHomeBatters.length >= 9
+      ? healthyHomeBatters
+      : homeRoster.filter(p => p.role === 'BATTER' && !p.isInjured).slice(0, 9);
+
+  // Fallback if roster has fewer than 9 healthy batters
   const safeAwayBatters = awayBatters.length > 0 ? awayBatters : awayRoster.filter(p => p.role === 'BATTER').slice(0, 9);
   const safeHomeBatters = homeBatters.length > 0 ? homeBatters : homeRoster.filter(p => p.role === 'BATTER').slice(0, 9);
 
-  const awaySPs = awayRoster.filter(p => p.role === 'PITCHER' && p.primaryPosition === 'SP' && p.tier === 'FIRST_TEAM');
-  const homeSPs = homeRoster.filter(p => p.role === 'PITCHER' && p.primaryPosition === 'SP' && p.tier === 'FIRST_TEAM');
+  const awaySPs = awayRoster.filter(p => p.role === 'PITCHER' && p.primaryPosition === 'SP' && p.tier === 'FIRST_TEAM' && !p.isInjured);
+  const homeSPs = homeRoster.filter(p => p.role === 'PITCHER' && p.primaryPosition === 'SP' && p.tier === 'FIRST_TEAM' && !p.isInjured);
 
   const rotIdx = Math.max(0, (options?.rotationDay || 1) - 1);
   const awaySP =
     awaySPs[rotIdx % Math.max(1, awaySPs.length)] ||
+    awayRoster.find(p => p.role === 'PITCHER' && !p.isInjured) ||
     awayRoster.find(p => p.role === 'PITCHER')!;
   const homeSP =
     homeSPs[rotIdx % Math.max(1, homeSPs.length)] ||
+    homeRoster.find(p => p.role === 'PITCHER' && !p.isInjured) ||
     homeRoster.find(p => p.role === 'PITCHER')!;
+
+  const awayBullpenFirst = awayRoster.filter(
+    p => p.role === 'PITCHER' && p.tier === 'FIRST_TEAM' && !p.isInjured && p.id !== awaySP?.id
+  );
+  const homeBullpenFirst = homeRoster.filter(
+    p => p.role === 'PITCHER' && p.tier === 'FIRST_TEAM' && !p.isInjured && p.id !== homeSP?.id
+  );
+  const bullpenAway =
+    awayBullpenFirst.length > 0
+      ? awayBullpenFirst
+      : awayRoster.filter(p => p.role === 'PITCHER' && !p.isInjured && p.id !== awaySP?.id);
+  const bullpenHome =
+    homeBullpenFirst.length > 0
+      ? homeBullpenFirst
+      : homeRoster.filter(p => p.role === 'PITCHER' && !p.isInjured && p.id !== homeSP?.id);
 
   let initialBoxStats: Record<string, PlayerGameBoxStat> = {};
   safeAwayBatters.forEach(b => {
@@ -124,6 +167,11 @@ export function createNewGame(
     currentPitcherHome: { ...homeSP },
     pitchCountAway: 0,
     pitchCountHome: 0,
+    bullpenAway,
+    bullpenHome,
+    usedPitcherIdsAway: awaySP ? [awaySP.id] : [],
+    usedPitcherIdsHome: homeSP ? [homeSP.id] : [],
+    autoBullpen: options?.autoBullpen ?? true,
     playerBoxStats: initialBoxStats,
     playLogs: [
       {
@@ -143,12 +191,148 @@ export function createNewGame(
   };
 }
 
+function maybeAutoSubstituteBullpen(state: LiveGameState): LiveGameState {
+  if (state.isFinished || state.autoBullpen === false) return state;
+  // 새 타석 시작(0-0 카운트)일 때만 자연스럽게 투수 교체
+  if (state.balls !== 0 || state.strikes !== 0) return state;
+
+  const isHomeDefending = state.isTop;
+  const defendingTeam = isHomeDefending ? state.homeTeam : state.awayTeam;
+  const currentPitcher = isHomeDefending ? state.currentPitcherHome : state.currentPitcherAway;
+  const pitchCount = isHomeDefending ? state.pitchCountHome : state.pitchCountAway;
+  const bullpen = isHomeDefending ? (state.bullpenHome || []) : (state.bullpenAway || []);
+  const usedIds = isHomeDefending
+    ? (state.usedPitcherIdsHome || [currentPitcher.id])
+    : (state.usedPitcherIdsAway || [currentPitcher.id]);
+
+  if (!currentPitcher || bullpen.length === 0) return state;
+
+  const available = bullpen.filter(p => !usedIds.includes(p.id) && p.id !== currentPitcher.id && !p.isInjured);
+  if (available.length === 0) return state;
+
+  const defendingScore = isHomeDefending ? state.score.home : state.score.away;
+  const attackingScore = isHomeDefending ? state.score.away : state.score.home;
+  const lead = defendingScore - attackingScore;
+  const isSaveSituation = state.inning >= 9 && lead > 0 && lead <= 3;
+
+  const box = state.playerBoxStats?.[currentPitcher.id];
+  const earnedRuns = box?.earnedRuns || 0;
+  const hitsAllowed = box?.hitsAllowed || 0;
+  const stamina = currentPitcher.pitcherStats?.stamina || 70;
+
+  let shouldSub = false;
+  let subReason = '';
+
+  if (currentPitcher.primaryPosition === 'SP') {
+    const spLimit = Math.round(78 + (stamina - 60) * 0.65);
+    if (isSaveSituation && available.some(p => p.primaryPosition === 'CP')) {
+      shouldSub = true;
+      subReason = '9회 세이브 상황 마무리 투입';
+    } else if (pitchCount >= spLimit) {
+      shouldSub = true;
+      subReason = `투구수 한계(${pitchCount}구) 도달`;
+    } else if (state.inning >= 5 && pitchCount >= 62 && (earnedRuns >= 4 || hitsAllowed >= 7)) {
+      shouldSub = true;
+      subReason = '실점 누적·피안타 관리 교체';
+    }
+  } else if (currentPitcher.primaryPosition === 'RP') {
+    const rpLimit = Math.round(24 + (stamina - 60) * 0.25);
+    if (isSaveSituation && available.some(p => p.primaryPosition === 'CP')) {
+      shouldSub = true;
+      subReason = '9회 세이브 상황 마무리 투입';
+    } else if (pitchCount >= rpLimit) {
+      shouldSub = true;
+      subReason = `구원 투구수 피로(${pitchCount}구)`;
+    } else if (pitchCount >= 12 && earnedRuns >= 3) {
+      shouldSub = true;
+      subReason = '위기 상황 필승조 조기 가동';
+    }
+  } else if (currentPitcher.primaryPosition === 'CP') {
+    const cpLimit = Math.round(32 + (stamina - 60) * 0.2);
+    if (pitchCount >= cpLimit) {
+      shouldSub = true;
+      subReason = `마무리 투구수 한계(${pitchCount}구)`;
+    }
+  }
+
+  if (!shouldSub) return state;
+
+  const scorePitcherFit = (p: Player) => {
+    const st = p.pitcherStats;
+    const base = (st?.control || 60) + (st?.stuff || 60) + ((st?.velocity || 140) - 130);
+    if (isSaveSituation) {
+      if (p.primaryPosition === 'CP') return base + 200;
+      if (p.primaryPosition === 'RP') return base + 80;
+      return base;
+    }
+    if (state.inning >= 6) {
+      if (p.primaryPosition === 'RP') return base + 120;
+      if (p.primaryPosition === 'CP' && state.inning >= 9) return base + 100;
+      return base;
+    }
+    if (p.primaryPosition === 'RP') return base + 100;
+    if (p.primaryPosition === 'SP') return base + 60;
+    return base;
+  };
+
+  const nextPitcher = [...available].sort((a, b) => scorePitcherFit(b) - scorePitcherFit(a))[0];
+  if (!nextPitcher) return state;
+
+  let nextBoxStats = { ...(state.playerBoxStats || {}) };
+  // 중간 계투가 6~8회 리드 상황에서 아웃카운트를 잡고 내려갈 때 홀드 부여
+  if (
+    currentPitcher.primaryPosition !== 'SP' &&
+    state.inning >= 6 &&
+    state.inning <= 8 &&
+    lead > 0 &&
+    lead <= 3 &&
+    (box?.inningsOuts || 0) >= 1
+  ) {
+    nextBoxStats = updateBoxStat(nextBoxStats, currentPitcher, s => ({ ...s, holds: s.holds + 1 }));
+  }
+  nextBoxStats = ensureBoxStat(nextBoxStats, nextPitcher, false);
+
+  const subLog: PlayLogEntry = {
+    id: `autobp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    inning: state.inning,
+    isTop: state.isTop,
+    batterName: '',
+    pitcherName: nextPitcher.name,
+    balls: state.balls,
+    strikes: state.strikes,
+    outs: state.outs,
+    description: `🔄 [자동 불펜 교체] ${defendingTeam.name} 벤치 가동! ${currentPitcher.name}(${pitchCount}구) → ${nextPitcher.name}(${nextPitcher.primaryPosition}, ${nextPitcher.pitcherStats?.velocity || 144}km/h) 등판 (${subReason})`,
+    highlightType: 'TACTIC',
+  };
+
+  if (isHomeDefending) {
+    return {
+      ...state,
+      currentPitcherHome: { ...nextPitcher },
+      pitchCountHome: 0,
+      usedPitcherIdsHome: [...usedIds, nextPitcher.id],
+      playerBoxStats: nextBoxStats,
+      playLogs: [subLog, ...state.playLogs],
+    };
+  }
+  return {
+    ...state,
+    currentPitcherAway: { ...nextPitcher },
+    pitchCountAway: 0,
+    usedPitcherIdsAway: [...usedIds, nextPitcher.id],
+    playerBoxStats: nextBoxStats,
+    playLogs: [subLog, ...state.playLogs],
+  };
+}
+
 export function simulateNextPitch(
-  state: LiveGameState,
+  rawState: LiveGameState,
   tactic: TacticChoice = 'NORMAL',
   silent = false
 ): LiveGameState {
-  if (state.isFinished) return state;
+  if (rawState.isFinished) return rawState;
+
+  const state = tactic === 'NORMAL' ? maybeAutoSubstituteBullpen(rawState) : rawState;
 
   const currentBatters = state.isTop ? state.battingOrderAway : state.battingOrderHome;
   const currentOrderIdx = state.isTop ? state.orderIndexAway : state.orderIndexHome;
@@ -1227,10 +1411,18 @@ export function autoDevelopAllLeaguePlayers(
   playersMap: Record<string, Player[]>,
   teams: Team[],
   seasonNumber: number,
-  currentDay: number
-): { nextPlayersMap: Record<string, Player[]>; growthLogs: AutoGrowthLog[] } {
+  currentDay: number,
+  userTeamId?: string
+): {
+  nextPlayersMap: Record<string, Player[]>;
+  growthLogs: AutoGrowthLog[];
+  newlyInjuredUserPlayers: Player[];
+  recoveredCount: number;
+} {
   const nextMap: Record<string, Player[]> = {};
   const growthLogs: AutoGrowthLog[] = [];
+  const newlyInjuredUserPlayers: Player[] = [];
+  let recoveredCount = 0;
 
   const potExpMap: Record<string, number> = { S: 52, A: 42, B: 32, C: 24, D: 16 };
 
@@ -1240,8 +1432,47 @@ export function autoDevelopAllLeaguePlayers(
     const pitchFac = team.facilityLevels?.pitchingLab || 2;
     const weightFac = team.facilityLevels?.weightRoom || 2;
     const medFac = team.facilityLevels?.medicalCenter || 2;
+    const injuryProb = Math.max(0.005, 0.018 - medFac * 0.0025);
 
-    nextMap[team.id] = roster.map(player => {
+    const updatedRoster = roster.map(player => {
+      // 1) 부상 회복 처리
+      if (player.isInjured) {
+        const healStep = medFac >= 4 ? 2 : 1;
+        const remainDays = Math.max(0, (player.injuryDays || 1) - healStep);
+        if (remainDays === 0) {
+          recoveredCount += 1;
+          return {
+            ...player,
+            isInjured: false,
+            injuryDays: 0,
+            condition: 86,
+            currentStamina: 95,
+          };
+        }
+        return {
+          ...player,
+          injuryDays: remainDays,
+          condition: Math.max(55, (player.condition || 60) + 2),
+        };
+      }
+
+      // 2) 일일 부상 발생 체크 (1군 주전 위주 소확률)
+      if (player.tier === 'FIRST_TEAM' && Math.random() < injuryProb) {
+        const days = Math.floor(Math.random() * 5) + 3; // 3~7일 부상
+        const injuredPlayer: Player = {
+          ...player,
+          isInjured: true,
+          injuryDays: days,
+          tier: 'SECOND_TEAM', // 부상자 명단(2군 말소)
+          condition: 55,
+        };
+        if (userTeamId && team.id === userTeamId) {
+          newlyInjuredUserPlayers.push(injuredPlayer);
+        }
+        return injuredPlayer;
+      }
+
+      // 3) 경험치 & 스탯 자동 육성
       const potExp = potExpMap[player.potential] || 24;
       const ageBonus = player.age <= 22 ? 28 : player.age <= 26 ? 18 : player.age <= 30 ? 10 : 4;
       const tierBonus = player.tier === 'SECOND_TEAM' ? 22 : 8;
@@ -1268,17 +1499,15 @@ export function autoDevelopAllLeaguePlayers(
             { key: 'defense', label: '수비' },
             { key: 'clutch', label: '클러치' },
           ];
-          // Pick 2 distinct stats to improve
           const first = statKeys[Math.floor(Math.random() * statKeys.length)];
           let second = statKeys[Math.floor(Math.random() * statKeys.length)];
           if (second.key === first.key) {
             second = statKeys[(statKeys.indexOf(first) + 1) % statKeys.length];
           }
           const boost1 = player.potential === 'S' || player.potential === 'A' ? 2 : 1;
-          const boost2 = 1;
           nextBatterStats[first.key] = Math.min(99, nextBatterStats[first.key] + boost1);
-          nextBatterStats[second.key] = Math.min(99, nextBatterStats[second.key] + boost2);
-          gainedParts.push(`${first.label}+${boost1}`, `${second.label}+${boost2}`);
+          nextBatterStats[second.key] = Math.min(99, nextBatterStats[second.key] + 1);
+          gainedParts.push(`${first.label}+${boost1}`, `${second.label}+1`);
         } else if (player.role === 'PITCHER' && nextPitcherStats) {
           const roll = Math.random();
           if (roll < 0.28 && nextPitcherStats.velocity < 162) {
@@ -1330,9 +1559,40 @@ export function autoDevelopAllLeaguePlayers(
         pitcherStats: nextPitcherStats,
       };
     });
+
+    // 4) CPU 구단 자동 1·2군 로테이션 보충 (건강한 2군 최고 가치 선수 자동 콜업)
+    if (!userTeamId || team.id !== userTeamId) {
+      const firstBattersCount = updatedRoster.filter(p => p.role === 'BATTER' && p.tier === 'FIRST_TEAM' && !p.isInjured).length;
+      const firstPitchersCount = updatedRoster.filter(p => p.role === 'PITCHER' && p.tier === 'FIRST_TEAM' && !p.isInjured).length;
+
+      let rotatedRoster = [...updatedRoster];
+      if (firstBattersCount < 9) {
+        const bestHealthyResBatter = rotatedRoster
+          .filter(p => p.role === 'BATTER' && p.tier === 'SECOND_TEAM' && !p.isInjured)
+          .sort((a, b) => calculatePlayerTradeValue(b) - calculatePlayerTradeValue(a))[0];
+        if (bestHealthyResBatter) {
+          rotatedRoster = rotatedRoster.map(p =>
+            p.id === bestHealthyResBatter.id ? { ...p, tier: 'FIRST_TEAM' } : p
+          );
+        }
+      }
+      if (firstPitchersCount < 6) {
+        const bestHealthyResPitcher = rotatedRoster
+          .filter(p => p.role === 'PITCHER' && p.tier === 'SECOND_TEAM' && !p.isInjured)
+          .sort((a, b) => calculatePlayerTradeValue(b) - calculatePlayerTradeValue(a))[0];
+        if (bestHealthyResPitcher) {
+          rotatedRoster = rotatedRoster.map(p =>
+            p.id === bestHealthyResPitcher.id ? { ...p, tier: 'FIRST_TEAM' } : p
+          );
+        }
+      }
+      nextMap[team.id] = rotatedRoster;
+    } else {
+      nextMap[team.id] = updatedRoster;
+    }
   });
 
-  return { nextPlayersMap: nextMap, growthLogs };
+  return { nextPlayersMap: nextMap, growthLogs, newlyInjuredUserPlayers, recoveredCount };
 }
 
 export function generateDailyApprovals(
@@ -1341,7 +1601,8 @@ export function generateDailyApprovals(
   userTeamId: string,
   seasonNumber: number,
   currentDay: number,
-  growthLogs: AutoGrowthLog[]
+  growthLogs: AutoGrowthLog[],
+  newlyInjuredUserPlayers: Player[] = []
 ): PendingApproval[] {
   const approvals: PendingApproval[] = [];
   const userTeam = teams.find(t => t.id === userTeamId);
@@ -1349,6 +1610,28 @@ export function generateDailyApprovals(
   const otherTeams = teams.filter(t => t.id !== userTeamId);
 
   if (!userTeam || otherTeams.length === 0 || userRoster.length === 0) return approvals;
+
+  // 0) 우리 구단 1군 부상자 발생 시 2군 대체 콜업 결재 알림
+  newlyInjuredUserPlayers.forEach(injured => {
+    const replacement = userRoster
+      .filter(p => p.tier === 'SECOND_TEAM' && !p.isInjured && p.role === injured.role)
+      .sort((a, b) => calculatePlayerTradeValue(b) - calculatePlayerTradeValue(a))[0];
+    if (replacement) {
+      approvals.push({
+        id: `appr_inj_${currentDay}_${injured.id}`,
+        category: 'INJURY_REPLACEMENT',
+        title: `🚑 ${injured.name} 부상 이탈 — 대체 선수 콜업 결재`,
+        subtitle: `부상 기간 ${injured.injuryDays}일 진단 · 수석 코치가 2군 대체 자원 콜업을 요청했습니다.`,
+        createdAtDay: currentDay,
+        seasonNumber,
+        fromTeamId: userTeam.id,
+        toTeamId: userTeam.id,
+        offeredPlayer: injured,
+        targetPlayer: replacement,
+        evaluationSummary: `${injured.name}(${injured.primaryPosition}) 선수가 ${injured.injuryDays}일 부상으로 2군 재활군으로 이동했습니다. 2군에서 컨디션(${replacement.condition}%)이 가장 좋은 ${replacement.name}(${replacement.primaryPosition}, Lv.${replacement.level}) 선수를 즉시 1군에 대체 콜업할까요?`,
+      });
+    }
+  });
 
   // 1) 타 구단이 우리 구단에 트레이드 제안 (매 경기 후 55% 확률)
   if (Math.random() < 0.55) {
@@ -1360,7 +1643,6 @@ export function generateDailyApprovals(
       const userCandidate = userRoster[Math.floor(Math.random() * userRoster.length)];
       const userVal = calculatePlayerTradeValue(userCandidate);
 
-      // 비슷한 가치의 상대 선수 찾기
       const matchedOpp = oppRoster.find(op => Math.abs(calculatePlayerTradeValue(op) - userVal) <= 12);
       if (matchedOpp) {
         const oppVal = calculatePlayerTradeValue(matchedOpp);
@@ -1416,7 +1698,7 @@ export function generateDailyApprovals(
   const userLeveledReserve = growthLogs.find(g => {
     if (g.teamId !== userTeamId) return false;
     const p = userRoster.find(r => r.id === g.playerId);
-    return p?.tier === 'SECOND_TEAM';
+    return p?.tier === 'SECOND_TEAM' && !p.isInjured;
   });
 
   if (userLeveledReserve) {
@@ -1439,4 +1721,597 @@ export function generateDailyApprovals(
 
   return approvals;
 }
+
+export function estimatePlayerSalary(p: Player): number {
+  const val = calculatePlayerTradeValue(p);
+  return Math.max(3000, Math.round((val * val) * 1.4)); // 단위: 만원 (최소 3,000만원 ~ 수억대)
+}
+
+export function generateFreeAgentPool(seasonNumber: number, teams: Team[]): FreeAgent[] {
+  const batterPositions: Position[] = ['C', '1B', '2B', '3B', 'SS', 'LF', 'CF', 'RF', 'DH'];
+  const pitcherPositions: Position[] = ['SP', 'SP', 'RP', 'RP', 'CP'];
+  const notes = [
+    '다년간 검증된 즉시전력감 베테랑',
+    '장타력·클러치 능력을 갖춘 FA 최대어',
+    '안정적인 수비와 출루율을 자랑하는 핵심 전력',
+    '불펜 필승조 및 이닝 소화 능력이 뛰어난 투수',
+    '해외 리그·독립야구에서 복귀한 숨은 진주',
+  ];
+
+  const pool: FreeAgent[] = [];
+  for (let i = 0; i < 14; i++) {
+    const isPitcher = i % 2 === 1;
+    const role = isPitcher ? 'PITCHER' : 'BATTER';
+    const pos = isPitcher
+      ? pitcherPositions[i % pitcherPositions.length]
+      : batterPositions[i % batterPositions.length];
+    const potential = i < 3 ? 'S' : i < 7 ? 'A' : i < 11 ? 'B' : 'C';
+    const player = generatePlayer('fa_pool', role, pos, 'FIRST_TEAM', potential);
+    player.age = 26 + (i % 8);
+    player.level = 3 + (i % 4);
+    player.condition = 92;
+
+    if (role === 'BATTER' && player.batterStats) {
+      player.batterStats.contact = Math.min(95, player.batterStats.contact + 6);
+      player.batterStats.power = Math.min(95, player.batterStats.power + 5);
+    } else if (role === 'PITCHER' && player.pitcherStats) {
+      player.pitcherStats.velocity = Math.min(158, player.pitcherStats.velocity + 3);
+      player.pitcherStats.stuff = Math.min(95, player.pitcherStats.stuff + 6);
+    }
+
+    const prevTeam = teams[(seasonNumber + i) % Math.max(1, teams.length)];
+    const askingPrice = Math.round(estimatePlayerSalary(player) * (1.05 + (i % 3) * 0.1));
+
+    pool.push({
+      id: `fa_${seasonNumber}_${i}_${Math.random().toString(36).slice(2, 6)}`,
+      player,
+      askingPrice,
+      previousTeamName: prevTeam?.name || '해외 리그',
+      contractYears: i < 4 ? 3 : i < 9 ? 2 : 1,
+      marketNote: notes[i % notes.length],
+    });
+  }
+
+  return pool.sort((a, b) => b.askingPrice - a.askingPrice);
+}
+
+export function createPostseasonBracket(sortedTeams: Team[], seasonNumber: number): PostseasonState {
+  const seeds = sortedTeams.slice(0, 5).map(t => t.id);
+  const wcSeries: PostseasonSeries = {
+    id: `ps_${seasonNumber}_wc`,
+    roundIndex: 0,
+    roundName: '와일드카드',
+    bestOf: 2,
+    winsNeeded: 2,
+    higherSeedTeamId: seeds[3], // 4위 (1승 어드밴티지 보유)
+    lowerSeedTeamId: seeds[4],  // 5위
+    higherWins: 1,
+    lowerWins: 0,
+    gamesLog: [],
+  };
+
+  return {
+    seasonNumber,
+    seeds,
+    currentRoundIndex: 0,
+    seriesList: [wcSeries],
+  };
+}
+
+export function simulatePostseasonNextGame(
+  postseason: PostseasonState,
+  teams: Team[],
+  playersMap: Record<string, Player[]>
+): PostseasonState {
+  if (postseason.championTeamId) return postseason;
+
+  const activeIdx = postseason.seriesList.findIndex(s => !s.winnerTeamId);
+  if (activeIdx === -1) return postseason;
+
+  const series = postseason.seriesList[activeIdx];
+  const higherTeam = teams.find(t => t.id === series.higherSeedTeamId);
+  const lowerTeam = teams.find(t => t.id === series.lowerSeedTeamId);
+  if (!higherTeam || !lowerTeam) return postseason;
+
+  // 상위 시드가 홀수 경기 홈구장 어드밴티지
+  const gameNumber = series.gamesLog.length + 1;
+  const isHigherHome = gameNumber % 2 === 1;
+  const awayTeam = isHigherHome ? lowerTeam : higherTeam;
+  const homeTeam = isHigherHome ? higherTeam : lowerTeam;
+
+  let simGame = simulateCpuMatch(
+    awayTeam,
+    homeTeam,
+    playersMap[awayTeam.id] || [],
+    playersMap[homeTeam.id] || [],
+    gameNumber
+  );
+
+  let awayScore = simGame.score.away;
+  let homeScore = simGame.score.home;
+  // 포스트시즌 무승부 방지 (연장 끝내기)
+  if (awayScore === homeScore) {
+    if (Math.random() < 0.55) homeScore += 1;
+    else awayScore += 1;
+  }
+
+  const winnerTeamId = homeScore > awayScore ? homeTeam.id : awayTeam.id;
+  const nextHigherWins = series.higherWins + (winnerTeamId === higherTeam.id ? 1 : 0);
+  const nextLowerWins = series.lowerWins + (winnerTeamId === lowerTeam.id ? 1 : 0);
+
+  let seriesWinnerId: string | undefined;
+  if (nextHigherWins >= series.winsNeeded) seriesWinnerId = higherTeam.id;
+  else if (nextLowerWins >= series.winsNeeded) seriesWinnerId = lowerTeam.id;
+
+  const updatedSeries: PostseasonSeries = {
+    ...series,
+    higherWins: nextHigherWins,
+    lowerWins: nextLowerWins,
+    winnerTeamId: seriesWinnerId,
+    gamesLog: [
+      ...series.gamesLog,
+      {
+        gameNumber,
+        awayTeamName: awayTeam.name,
+        homeTeamName: homeTeam.name,
+        awayScore,
+        homeScore,
+        winnerTeamId,
+      },
+    ],
+  };
+
+  const nextSeriesList = [...postseason.seriesList];
+  nextSeriesList[activeIdx] = updatedSeries;
+
+  let nextRoundIndex = postseason.currentRoundIndex;
+  let championTeamId = postseason.championTeamId;
+
+  if (seriesWinnerId) {
+    if (series.roundIndex === 0) {
+      // 와일드카드 종료 -> 준플레이오프 (3위 vs WC 승자, 3전 2선승)
+      nextRoundIndex = 1;
+      nextSeriesList.push({
+        id: `ps_${postseason.seasonNumber}_semi`,
+        roundIndex: 1,
+        roundName: '준플레이오프',
+        bestOf: 3,
+        winsNeeded: 2,
+        higherSeedTeamId: postseason.seeds[2],
+        lowerSeedTeamId: seriesWinnerId,
+        higherWins: 0,
+        lowerWins: 0,
+        gamesLog: [],
+      });
+    } else if (series.roundIndex === 1) {
+      // 준플레이오프 종료 -> 플레이오프 (2위 vs 준PO 승자, 5전 3선승)
+      nextRoundIndex = 2;
+      nextSeriesList.push({
+        id: `ps_${postseason.seasonNumber}_po`,
+        roundIndex: 2,
+        roundName: '플레이오프',
+        bestOf: 5,
+        winsNeeded: 3,
+        higherSeedTeamId: postseason.seeds[1],
+        lowerSeedTeamId: seriesWinnerId,
+        higherWins: 0,
+        lowerWins: 0,
+        gamesLog: [],
+      });
+    } else if (series.roundIndex === 2) {
+      // 플레이오프 종료 -> JBL 한국시리즈 (1위 vs PO 승자, 7전 4선승)
+      nextRoundIndex = 3;
+      nextSeriesList.push({
+        id: `ps_${postseason.seasonNumber}_ks`,
+        roundIndex: 3,
+        roundName: 'JBL 한국시리즈',
+        bestOf: 7,
+        winsNeeded: 4,
+        higherSeedTeamId: postseason.seeds[0],
+        lowerSeedTeamId: seriesWinnerId,
+        higherWins: 0,
+        lowerWins: 0,
+        gamesLog: [],
+      });
+    } else if (series.roundIndex === 3) {
+      championTeamId = seriesWinnerId;
+    }
+  }
+
+  return {
+    ...postseason,
+    currentRoundIndex: nextRoundIndex,
+    seriesList: nextSeriesList,
+    championTeamId,
+  };
+}
+
+/**
+ * 구단 로스터 자동 최적화:
+ * 1) 부상 중인 1군 선수를 2군 재활군으로 이동하고, 건강한 2군 최고 능력치 선수를 1군으로 보충
+ * 2) 1군 타자 타순(1~9번)을 테이블세터(출루·주력) -> 중심타선(파워·클러치) 순으로 자동 정렬
+ * 3) 1군 투수 로테이션을 1~5선발(SP) -> 셋업(RP) -> 마무리(CP) 순으로 자동 정리
+ */
+export function autoOptimizeTeamRoster(roster: Player[]): Player[] {
+  let next = roster.map(p => ({ ...p }));
+
+  // 1) 부상 1군 선수 2군 전환
+  next = next.map(p => (p.tier === 'FIRST_TEAM' && p.isInjured ? { ...p, tier: 'SECOND_TEAM' as const } : p));
+
+  // 2) 건강한 1군 야수 최소 9명 확보
+  const healthyFirstBatters = next.filter(p => p.role === 'BATTER' && p.tier === 'FIRST_TEAM' && !p.isInjured);
+  if (healthyFirstBatters.length < 9) {
+    const needed = 9 - healthyFirstBatters.length;
+    const candidates = next
+      .filter(p => p.role === 'BATTER' && p.tier === 'SECOND_TEAM' && !p.isInjured)
+      .sort((a, b) => calculatePlayerTradeValue(b) - calculatePlayerTradeValue(a))
+      .slice(0, needed);
+    const callIds = new Set(candidates.map(c => c.id));
+    next = next.map(p => (callIds.has(p.id) ? { ...p, tier: 'FIRST_TEAM' as const } : p));
+  }
+
+  // 3) 건강한 1군 투수 최소 7명(선발 포함) 확보
+  const healthyFirstPitchers = next.filter(p => p.role === 'PITCHER' && p.tier === 'FIRST_TEAM' && !p.isInjured);
+  if (healthyFirstPitchers.length < 7) {
+    const needed = 7 - healthyFirstPitchers.length;
+    const candidates = next
+      .filter(p => p.role === 'PITCHER' && p.tier === 'SECOND_TEAM' && !p.isInjured)
+      .sort((a, b) => calculatePlayerTradeValue(b) - calculatePlayerTradeValue(a))
+      .slice(0, needed);
+    const callIds = new Set(candidates.map(c => c.id));
+    next = next.map(p => (callIds.has(p.id) ? { ...p, tier: 'FIRST_TEAM' as const } : p));
+  }
+
+  const firstBatters = next.filter(p => p.role === 'BATTER' && p.tier === 'FIRST_TEAM');
+  const firstPitchers = next.filter(p => p.role === 'PITCHER' && p.tier === 'FIRST_TEAM');
+  const secondTeam = next.filter(p => p.tier === 'SECOND_TEAM');
+
+  // 타순 자동 최적화
+  const sortedBatters = [...firstBatters].sort((a, b) => {
+    const sa = a.batterStats;
+    const sb = b.batterStats;
+    const scoreA = (sa?.contact || 60) * 1.1 + (sa?.power || 60) * 1.0 + (sa?.eye || 60) * 0.9;
+    const scoreB = (sb?.contact || 60) * 1.1 + (sb?.power || 60) * 1.0 + (sb?.eye || 60) * 0.9;
+    return scoreB - scoreA;
+  });
+
+  if (sortedBatters.length >= 5) {
+    const top5 = sortedBatters.slice(0, 5);
+    const rest = sortedBatters.slice(5);
+    const leadoff = [...top5].sort(
+      (a, b) =>
+        ((b.batterStats?.speed || 0) + (b.batterStats?.eye || 0)) -
+        ((a.batterStats?.speed || 0) + (a.batterStats?.eye || 0))
+    );
+    const first = leadoff[0];
+    const second = leadoff[1];
+    const cleanups = top5
+      .filter(p => p.id !== first.id && p.id !== second.id)
+      .sort((a, b) => (b.batterStats?.power || 0) - (a.batterStats?.power || 0));
+    sortedBatters.splice(0, sortedBatters.length, first, second, ...cleanups, ...rest);
+  }
+
+  // 투수 로테이션 자동 정렬: SP (능력치 순) -> RP -> CP
+  const roleOrder: Record<string, number> = { SP: 0, RP: 1, CP: 2 };
+  const sortedPitchers = [...firstPitchers].sort((a, b) => {
+    const ra = roleOrder[a.primaryPosition] ?? 1;
+    const rb = roleOrder[b.primaryPosition] ?? 1;
+    if (ra !== rb) return ra - rb;
+    return calculatePlayerTradeValue(b) - calculatePlayerTradeValue(a);
+  });
+
+  return [...sortedBatters, ...sortedPitchers, ...secondTeam];
+}
+
+/**
+ * 종료된 경기에서 노히트/완봉, 10탈삼진, 멀티홈런, 4안타 등 속보 뉴스 자동 생성
+ */
+export function detectMatchHighlightNews(
+  game: LiveGameState,
+  seasonNumber: number,
+  day: number
+): LeagueNewsItem[] {
+  const items: LeagueNewsItem[] = [];
+  const boxList = Object.values(game.playerBoxStats || {});
+  const rosterLookup = [
+    ...game.battingOrderAway,
+    ...game.battingOrderHome,
+    game.currentPitcherAway,
+    game.currentPitcherHome,
+    ...(game.bullpenAway || []),
+    ...(game.bullpenHome || []),
+  ];
+
+  const findInfo = (playerId: string) => {
+    const p = rosterLookup.find(r => r.id === playerId);
+    const team = p?.teamId === game.homeTeam.id ? game.homeTeam : game.awayTeam;
+    return { player: p, team };
+  };
+
+  // 타자 대기록
+  boxList
+    .filter(b => b.role === 'BATTER')
+    .forEach(b => {
+      const { player, team } = findInfo(b.playerId);
+      if (!player) return;
+      if (b.homeRuns >= 2) {
+        items.push({
+          id: `news_hr_${game.gameId}_${b.playerId}`,
+          seasonNumber,
+          day,
+          category: 'RECORD',
+          title: `🔥 ${team.name} ${player.name}, 한 경기 ${b.homeRuns}홈런 폭발!`,
+          detail: `${game.awayTeam.name} ${game.score.away}:${game.score.home} ${game.homeTeam.name} 경기에서 ${b.atBats}타수 ${b.hits}안타 ${b.homeRuns}홈런 ${b.rbi}타점 맹활약`,
+        });
+      } else if (b.hits >= 4) {
+        items.push({
+          id: `news_hit_${game.gameId}_${b.playerId}`,
+          seasonNumber,
+          day,
+          category: 'RECORD',
+          title: `🏏 ${team.name} ${player.name}, ${b.hits}안타 맹타 휘둘러`,
+          detail: `${b.atBats}타수 ${b.hits}안타 ${b.rbi}타점으로 타선을 이끌었습니다.`,
+        });
+      }
+    });
+
+  // 투수 대기록
+  boxList
+    .filter(p => p.role === 'PITCHER')
+    .forEach(p => {
+      const { player, team } = findInfo(p.playerId);
+      if (!player) return;
+      if (p.inningsOuts >= 27 && p.earnedRuns === 0 && p.hitsAllowed === 0) {
+        items.push({
+          id: `news_nh_${game.gameId}_${p.playerId}`,
+          seasonNumber,
+          day,
+          category: 'RECORD',
+          title: `👑 [대기록] ${team.name} ${player.name}, 노히트 노런 달성!`,
+          detail: `9이닝 ${p.pitcherStrikeouts}탈삼진 무실점 완벽투로 JBL 역사를 새로 썼습니다!`,
+        });
+      } else if (p.inningsOuts >= 24 && p.earnedRuns === 0) {
+        items.push({
+          id: `news_so_${game.gameId}_${p.playerId}`,
+          seasonNumber,
+          day,
+          category: 'RECORD',
+          title: `⚡ ${team.name} ${player.name}, 완봉급 무실점 역투`,
+          detail: `${Math.floor(p.inningsOuts / 3)}이닝 ${p.pitcherStrikeouts}탈삼진 무실점으로 상대 타선을 봉쇄했습니다.`,
+        });
+      } else if (p.pitcherStrikeouts >= 9) {
+        items.push({
+          id: `news_k_${game.gameId}_${p.playerId}`,
+          seasonNumber,
+          day,
+          category: 'RECORD',
+          title: `💨 닥터K ${player.name}(${team.name}), ${p.pitcherStrikeouts}탈삼진 쇼`,
+          detail: `${Math.floor(p.inningsOuts / 3)}.${p.inningsOuts % 3}이닝 동안 ${p.pitcherStrikeouts}개의 삼진을 뽑아냈습니다.`,
+        });
+      }
+    });
+
+  // 대승 / 1점 차 명승부
+  const diff = Math.abs(game.score.home - game.score.away);
+  if (diff >= 7) {
+    const winT = game.score.home > game.score.away ? game.homeTeam : game.awayTeam;
+    const loseT = game.score.home > game.score.away ? game.awayTeam : game.homeTeam;
+    items.push({
+      id: `news_blow_${game.gameId}`,
+      seasonNumber,
+      day,
+      category: 'MATCH',
+      title: `📢 ${winT.name}, ${loseT.name} 상대 ${diff}점 차 화력 대승`,
+      detail: `${game.awayTeam.name} ${game.score.away} : ${game.score.home} ${game.homeTeam.name} (${game.hits.away}안타 vs ${game.hits.home}안타)`,
+    });
+  }
+
+  return items;
+}
+
+/**
+ * 시즌 결산 MVP, 신인왕, 개인 타이틀, 골든글러브 자동 선정
+ */
+export function computeSeasonAwards(
+  seasonNumber: number,
+  championTeamName: string,
+  teams: Team[],
+  playersMap: Record<string, Player[]>
+): SeasonAwardRecord {
+  const teamMap = new Map(teams.map(t => [t.id, t]));
+  const allBatters: Array<{ player: Player; team: Team }> = [];
+  const allPitchers: Array<{ player: Player; team: Team }> = [];
+
+  teams.forEach(t => {
+    (playersMap[t.id] || []).forEach(p => {
+      if (p.role === 'BATTER') allBatters.push({ player: p, team: t });
+      if (p.role === 'PITCHER') allPitchers.push({ player: p, team: t });
+    });
+  });
+
+  const makeEntry = (player: Player, team: Team, summary: string, posOverride?: string): AwardWinnerEntry => ({
+    playerId: player.id,
+    playerName: player.name,
+    teamId: team.id,
+    teamName: team.name,
+    position: posOverride || player.primaryPosition,
+    summary,
+  });
+
+  const batterAvg = (p: Player) => {
+    const s = p.batterStats;
+    return s && s.atBats > 0 ? s.hits / s.atBats : (s?.contact || 60) / 300;
+  };
+  const batterOps = (p: Player) => {
+    const s = p.batterStats;
+    if (!s || s.atBats === 0) return 0.7;
+    const obp = (s.hits + s.walks) / Math.max(1, s.atBats + s.walks);
+    const slg = (s.hits + s.doubles + s.triples * 2 + s.homeRuns * 3) / s.atBats;
+    return obp + slg;
+  };
+  const batterWarProxy = (p: Player, team: Team) => {
+    const s = p.batterStats;
+    const teamBonus = (team.wins - team.losses) * 0.25;
+    if (!s || s.atBats === 0) return (s?.contact || 60) + (s?.power || 60) + teamBonus;
+    return s.hits * 1.1 + s.homeRuns * 4.5 + s.rbi * 0.9 + s.walks * 0.7 + s.stolenBases * 0.8 + teamBonus;
+  };
+  const pitcherWarProxy = (p: Player, team: Team) => {
+    const s = p.pitcherStats;
+    const teamBonus = (team.wins - team.losses) * 0.25;
+    if (!s || s.inningsOuts === 0) return (s?.stuff || 60) + (s?.control || 60) + teamBonus;
+    const ip = s.inningsOuts / 3;
+    const era = (s.earnedRuns * 9) / Math.max(1, ip);
+    return s.wins * 7 + s.saves * 4 + s.holds * 2 + s.strikeouts * 0.7 + Math.max(0, (4.8 - era) * 10) + teamBonus;
+  };
+  const pitcherEra = (p: Player) => {
+    const s = p.pitcherStats;
+    const ip = (s?.inningsOuts || 0) / 3;
+    return ip > 0 ? (s!.earnedRuns * 9) / ip : 3.99;
+  };
+
+  // MVP (타자 + 투수 통합 최고 활약)
+  const mvpCandidates = [
+    ...allBatters.map(x => ({
+      ...x,
+      score: batterWarProxy(x.player, x.team),
+      summary: x.player.batterStats?.atBats
+        ? `타율 ${batterAvg(x.player).toFixed(3)} · ${x.player.batterStats.homeRuns}홈런 · ${x.player.batterStats.rbi}타점`
+        : `컨택 ${x.player.batterStats?.contact} · 파워 ${x.player.batterStats?.power}`,
+    })),
+    ...allPitchers.map(x => ({
+      ...x,
+      score: pitcherWarProxy(x.player, x.team),
+      summary: x.player.pitcherStats?.inningsOuts
+        ? `${x.player.pitcherStats.wins}승 ${x.player.pitcherStats.losses}패 · ERA ${pitcherEra(x.player).toFixed(2)} · ${x.player.pitcherStats.strikeouts}K`
+        : `구속 ${x.player.pitcherStats?.velocity}km/h · 구위 ${x.player.pitcherStats?.stuff}`,
+    })),
+  ].sort((a, b) => b.score - a.score);
+
+  const mvpPick = mvpCandidates[0];
+
+  // 신인왕 (만 22세 이하)
+  const rookieCandidates = mvpCandidates.filter(c => c.player.age <= 22);
+  const rookiePick = rookieCandidates[0] || mvpCandidates[mvpCandidates.length - 1] || mvpPick;
+
+  // 타격왕
+  const avgPick = [...allBatters]
+    .filter(x => (x.player.batterStats?.atBats || 0) >= 5 || allBatters.every(b => (b.player.batterStats?.atBats || 0) < 5))
+    .sort((a, b) => batterAvg(b.player) - batterAvg(a.player))[0] || allBatters[0];
+
+  // 홈런왕
+  const hrPick = [...allBatters].sort(
+    (a, b) => (b.player.batterStats?.homeRuns || 0) - (a.player.batterStats?.homeRuns || 0) || batterOps(b.player) - batterOps(a.player)
+  )[0];
+
+  // 타점왕
+  const rbiPick = [...allBatters].sort(
+    (a, b) => (b.player.batterStats?.rbi || 0) - (a.player.batterStats?.rbi || 0)
+  )[0];
+
+  // 다승왕
+  const winsPick = [...allPitchers].sort(
+    (a, b) => (b.player.pitcherStats?.wins || 0) - (a.player.pitcherStats?.wins || 0) || pitcherEra(a.player) - pitcherEra(b.player)
+  )[0];
+
+  // 방어율왕
+  const eraPool = allPitchers.filter(x => (x.player.pitcherStats?.inningsOuts || 0) >= 9);
+  const eraPick = [...(eraPool.length > 0 ? eraPool : allPitchers)].sort(
+    (a, b) => pitcherEra(a.player) - pitcherEra(b.player)
+  )[0];
+
+  // 탈삼진왕
+  const kPick = [...allPitchers].sort(
+    (a, b) => (b.player.pitcherStats?.strikeouts || 0) - (a.player.pitcherStats?.strikeouts || 0)
+  )[0];
+
+  // 골든글러브 (투수, 포수, 내야 4개, 외야 3명, 지명타자)
+  const pickPos = (positions: Position[], label: string): AwardWinnerEntry => {
+    if (positions.includes('SP')) {
+      const topP = [...allPitchers].sort((a, b) => pitcherWarProxy(b.player, b.team) - pitcherWarProxy(a.player, a.team))[0];
+      const s = topP.player.pitcherStats;
+      return makeEntry(
+        topP.player,
+        topP.team,
+        s?.inningsOuts ? `${s.wins}승 · ERA ${pitcherEra(topP.player).toFixed(2)} · ${s.strikeouts}K` : `구속 ${s?.velocity}km/h`,
+        label
+      );
+    }
+    const pool = allBatters.filter(x => positions.includes(x.player.primaryPosition));
+    const chosen = [...(pool.length > 0 ? pool : allBatters)].sort(
+      (a, b) => batterWarProxy(b.player, b.team) - batterWarProxy(a.player, a.team)
+    )[0];
+    const bs = chosen.player.batterStats;
+    return makeEntry(
+      chosen.player,
+      chosen.team,
+      bs?.atBats ? `타율 ${batterAvg(chosen.player).toFixed(3)} · ${bs.homeRuns}홈런 · ${bs.rbi}타점` : `컨택 ${bs?.contact}`,
+      label
+    );
+  };
+
+  const ofSorted = [...allBatters]
+    .filter(x => ['LF', 'CF', 'RF'].includes(x.player.primaryPosition))
+    .sort((a, b) => batterWarProxy(b.player, b.team) - batterWarProxy(a.player, a.team));
+
+  const goldenGlove: AwardWinnerEntry[] = [
+    pickPos(['SP', 'RP', 'CP'], '투수'),
+    pickPos(['C'], '포수'),
+    pickPos(['1B'], '1루수'),
+    pickPos(['2B'], '2루수'),
+    pickPos(['3B'], '3루수'),
+    pickPos(['SS'], '유격수'),
+    ...[0, 1, 2].map(idx => {
+      const pick = ofSorted[idx] || allBatters[idx % allBatters.length];
+      const bs = pick.player.batterStats;
+      return makeEntry(
+        pick.player,
+        pick.team,
+        bs?.atBats ? `타율 ${batterAvg(pick.player).toFixed(3)} · ${bs.homeRuns}홈런 · ${bs.rbi}타점` : `컨택 ${bs?.contact}`,
+        '외야수'
+      );
+    }),
+    pickPos(['DH'], '지명타자'),
+  ];
+
+  const fallbackTeam = teams[0] || teamMap.values().next().value!;
+
+  return {
+    seasonNumber,
+    championTeamName,
+    mvp: makeEntry(mvpPick.player, mvpPick.team, mvpPick.summary),
+    rookieOfYear: makeEntry(rookiePick.player, rookiePick.team, rookiePick.summary),
+    battingTitle: makeEntry(
+      avgPick.player,
+      avgPick.team,
+      `타율 ${batterAvg(avgPick.player).toFixed(3)} (${avgPick.player.batterStats?.hits || 0}안타)`
+    ),
+    homeRunKing: makeEntry(
+      hrPick.player,
+      hrPick.team,
+      `${hrPick.player.batterStats?.homeRuns || 0}홈런 (${hrPick.player.batterStats?.rbi || 0}타점)`
+    ),
+    rbiKing: makeEntry(
+      rbiPick.player,
+      rbiPick.team,
+      `${rbiPick.player.batterStats?.rbi || 0}타점 (타율 ${batterAvg(rbiPick.player).toFixed(3)})`
+    ),
+    winsKing: makeEntry(
+      winsPick.player,
+      winsPick.team,
+      `${winsPick.player.pitcherStats?.wins || 0}승 ${winsPick.player.pitcherStats?.losses || 0}패`
+    ),
+    eraKing: makeEntry(
+      eraPick.player,
+      eraPick.team,
+      `ERA ${pitcherEra(eraPick.player).toFixed(2)}`
+    ),
+    strikeoutKing: makeEntry(
+      kPick.player,
+      kPick.team,
+      `${kPick.player.pitcherStats?.strikeouts || 0}탈삼진`
+    ),
+    goldenGlove,
+  };
+}
+
 

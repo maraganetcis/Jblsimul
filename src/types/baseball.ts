@@ -222,6 +222,13 @@ export interface LiveGameState {
   pitchCountAway: number;
   pitchCountHome: number;
 
+  // 불펜 및 자동 교체 관리 (하위 호환을 위해 optional 처리)
+  bullpenAway?: Player[];
+  bullpenHome?: Player[];
+  usedPitcherIdsAway?: string[];
+  usedPitcherIdsHome?: string[];
+  autoBullpen?: boolean;
+
   playerBoxStats: Record<string, PlayerGameBoxStat>;
 
   lastPitch?: PitchResult;
@@ -287,7 +294,11 @@ export interface MatchRecord {
   isUserMatch?: boolean;
 }
 
-export type ApprovalCategory = 'TRADE_INCOMING' | 'TRADE_LEAGUE' | 'PROMOTION_RECOMMEND';
+export type ApprovalCategory =
+  | 'TRADE_INCOMING'
+  | 'TRADE_LEAGUE'
+  | 'PROMOTION_RECOMMEND'
+  | 'INJURY_REPLACEMENT';
 
 export interface PendingApproval {
   id: string;
@@ -316,4 +327,79 @@ export interface AutoGrowthLog {
   newLevel: number;
   statGainText: string;
 }
+
+export interface FreeAgent {
+  id: string;
+  player: Player;
+  askingPrice: number; // 단위: 만원
+  previousTeamName: string;
+  contractYears: number;
+  marketNote: string;
+}
+
+export type PostseasonRoundName = '와일드카드' | '준플레이오프' | '플레이오프' | 'JBL 한국시리즈';
+
+export interface PostseasonSeriesGame {
+  gameNumber: number;
+  awayTeamName: string;
+  homeTeamName: string;
+  awayScore: number;
+  homeScore: number;
+  winnerTeamId: string;
+}
+
+export interface PostseasonSeries {
+  id: string;
+  roundIndex: number; // 0: WC, 1: 준PO, 2: PO, 3: 한국시리즈
+  roundName: PostseasonRoundName;
+  bestOf: number;
+  winsNeeded: number;
+  higherSeedTeamId: string;
+  lowerSeedTeamId: string;
+  higherWins: number;
+  lowerWins: number;
+  winnerTeamId?: string;
+  gamesLog: PostseasonSeriesGame[];
+}
+
+export interface PostseasonState {
+  seasonNumber: number;
+  seeds: string[]; // 1위 ~ 5위 팀 ID
+  currentRoundIndex: number;
+  seriesList: PostseasonSeries[];
+  championTeamId?: string;
+}
+
+export interface AwardWinnerEntry {
+  playerId: string;
+  playerName: string;
+  teamId: string;
+  teamName: string;
+  position: string;
+  summary: string;
+}
+
+export interface SeasonAwardRecord {
+  seasonNumber: number;
+  championTeamName: string;
+  mvp: AwardWinnerEntry;
+  rookieOfYear: AwardWinnerEntry;
+  battingTitle: AwardWinnerEntry;
+  homeRunKing: AwardWinnerEntry;
+  rbiKing: AwardWinnerEntry;
+  winsKing: AwardWinnerEntry;
+  eraKing: AwardWinnerEntry;
+  strikeoutKing: AwardWinnerEntry;
+  goldenGlove: AwardWinnerEntry[];
+}
+
+export interface LeagueNewsItem {
+  id: string;
+  seasonNumber: number;
+  day: number;
+  category: 'RECORD' | 'MATCH' | 'FA' | 'TRADE' | 'AWARD' | 'STREAK';
+  title: string;
+  detail: string;
+}
+
 

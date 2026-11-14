@@ -12,6 +12,7 @@ import {
   Clock,
   Sparkles,
   UserCheck,
+  HeartPulse,
   X,
 } from 'lucide-react';
 import { PendingApproval, Player, Team } from '../types/baseball';
@@ -129,6 +130,8 @@ export const ApprovalModal: React.FC<ApprovalModalProps> = ({
       ? { label: '긴급 트레이드 제안', color: 'bg-sky-100 text-sky-800 border-sky-300', icon: ArrowLeftRight }
       : current.category === 'TRADE_LEAGUE'
       ? { label: '커미셔너 트레이드 결재', color: 'bg-indigo-100 text-indigo-800 border-indigo-300', icon: ArrowLeftRight }
+      : current.category === 'INJURY_REPLACEMENT'
+      ? { label: '부상 대체 콜업 결재', color: 'bg-rose-100 text-rose-800 border-rose-300', icon: HeartPulse }
       : { label: '코치진 콜업 추천', color: 'bg-emerald-100 text-emerald-800 border-emerald-300', icon: UserCheck };
 
   const BadgeIcon = badgeInfo.icon;
@@ -191,6 +194,34 @@ export const ApprovalModal: React.FC<ApprovalModalProps> = ({
                 team={toTeam}
                 player={current.requestedPlayer}
                 accent="amber"
+                onInspect={onInspectPlayer}
+              />
+            </div>
+          </div>
+        ) : current.category === 'INJURY_REPLACEMENT' && current.offeredPlayer && current.targetPlayer ? (
+          <div className="grid grid-cols-1 md:grid-cols-11 gap-3 items-center">
+            <div className="md:col-span-5">
+              <PlayerMiniCard
+                label={`부상 이탈 (${current.offeredPlayer.injuryDays}일)`}
+                team={fromTeam}
+                player={current.offeredPlayer}
+                accent="amber"
+                onInspect={onInspectPlayer}
+              />
+            </div>
+
+            <div className="md:col-span-1 flex justify-center">
+              <div className="w-9 h-9 rounded-full bg-rose-100 border border-rose-200 flex items-center justify-center text-rose-600">
+                <UserCheck className="w-4 h-4" />
+              </div>
+            </div>
+
+            <div className="md:col-span-5">
+              <PlayerMiniCard
+                label="대체 콜업 추천 (2군)"
+                team={fromTeam}
+                player={current.targetPlayer}
+                accent="emerald"
                 onInspect={onInspectPlayer}
               />
             </div>

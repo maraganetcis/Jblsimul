@@ -29,6 +29,7 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({
   const [showPitcherSubModal, setShowPitcherSubModal] = useState(false);
   const [showBatterSubModal, setShowBatterSubModal] = useState(false);
   const [autoScrollFeed, setAutoScrollFeed] = useState(true);
+  const [liveBoxTeamTab, setLiveBoxTeamTab] = useState<'AWAY' | 'HOME'>('HOME');
 
   // Internal log container ref (never moves window scroll)
   const logContainerRef = useRef<HTMLDivElement>(null);
@@ -95,9 +96,15 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({
     if (gameState.isTop) {
       updated.currentPitcherHome = pitcher;
       updated.pitchCountHome = 0;
+      updated.usedPitcherIdsHome = Array.from(
+        new Set([...(gameState.usedPitcherIdsHome || [gameState.currentPitcherHome.id]), pitcher.id])
+      );
     } else {
       updated.currentPitcherAway = pitcher;
       updated.pitchCountAway = 0;
+      updated.usedPitcherIdsAway = Array.from(
+        new Set([...(gameState.usedPitcherIdsAway || [gameState.currentPitcherAway.id]), pitcher.id])
+      );
     }
     updated.playLogs = [
       {
@@ -118,6 +125,14 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({
     setShowPitcherSubModal(false);
   };
 
+  const isAutoBullpenOn = gameState.autoBullpen !== false;
+  const toggleAutoBullpen = () => {
+    onUpdateGameState({
+      ...gameState,
+      autoBullpen: !isAutoBullpenOn,
+    });
+  };
+
   const currentBatter = gameState.isTop
     ? gameState.battingOrderAway[gameState.orderIndexAway % gameState.battingOrderAway.length]
     : gameState.battingOrderHome[gameState.orderIndexHome % gameState.battingOrderHome.length];
@@ -131,18 +146,18 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({
     <div className="space-y-4 pb-12">
       {/* 1. Main Electronic Scoreboard (R-H-E) */}
       <div className="bg-gradient-to-r from-slate-900 via-sky-950 to-slate-900 text-white rounded-2xl overflow-hidden shadow-md border border-sky-900/60">
-        <div className="bg-slate-950/70 px-4 py-3 border-b border-sky-900/50 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="text-xs font-display font-bold text-sky-200 tracking-wider">
+        <div className="bg-slate-950/70 px-3 sm:px-4 py-2.5 sm:py-3 border-b border-sky-900/50 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2 sm:gap-3">
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse shrink-0" />
+            <span className="text-xs font-display font-bold text-sky-200 tracking-wider whitespace-nowrap">
               {gameState.isFinished ? '경기 종료 (FINAL)' : `${gameState.inning}회${gameState.isTop ? '초' : '말'} LIVE`}
             </span>
-            <span className="text-xs text-sky-400/50">|</span>
-            <span className="text-xs text-sky-200/80">{gameState.homeTeam.homeStadium}</span>
+            <span className="text-xs text-sky-400/50 hidden sm:inline">|</span>
+            <span className="text-xs text-sky-200/80 hidden sm:inline truncate max-w-[160px]">{gameState.homeTeam.homeStadium}</span>
           </div>
 
           {/* B-S-O Lamp Cluster */}
-          <div className="flex items-center gap-4 text-xs font-mono-numbers bg-slate-950/80 px-3 py-1 rounded-lg border border-sky-900/60">
+          <div className="flex items-center gap-3 sm:gap-4 text-xs font-mono-numbers bg-slate-950/80 px-2.5 sm:px-3 py-1 rounded-lg border border-sky-900/60">
             <div className="flex items-center gap-1.5">
               <span className="text-sky-300 font-bold">B</span>
               <div className="flex gap-1">
@@ -243,15 +258,29 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({
       </div>
 
       {/* 2. Middle Center: 3-Column Split (Matchup Card / Diamond Radar / Strike Zone) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-stretch">
-        {/* Matchup & Current Players Card (Col 4) */}
-        <div className="lg:col-span-4 bg-white border border-sky-100 rounded-2xl p-4 flex flex-col justify-between shadow-sm">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-4 items-stretch">
+        {/* Matchup & Current Players Card (Col 4 on lg, full on md) */}
+        <div className="md:col-span-2 lg:col-span-4 bg-white border border-sky-100 rounded-2xl p-4 flex flex-col justify-between shadow-sm">
           <div>
-            <div className="flex items-center justify-between pb-2 border-b border-sky-100 mb-3">
+            <div className="flex items-center justify-between pb-2 border-b border-sky-100 mb-3 gap-2">
               <span className="text-xs font-bold text-slate-500">현재 투타 매치업</span>
-              <span className="text-xs text-sky-600 font-mono-numbers font-semibold">
-                투구수: {gameState.isTop ? gameState.pitchCountHome : gameState.pitchCountAway}구
-              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={toggleAutoBullpen}
+                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold border transition-colors ${
+                    isAutoBullpenOn
+                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                      : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200'
+                  }`}
+                  title="투구수·피로도·세이브 상황에 따라 불펜 투수를 자동으로 교체합니다"
+                >
+                  자동 불펜 교체 {isAutoBullpenOn ? 'ON' : 'OFF'}
+                </button>
+                <span className="text-xs text-sky-600 font-mono-numbers font-semibold">
+                  투구수: {gameState.isTop ? gameState.pitchCountHome : gameState.pitchCountAway}구
+                </span>
+              </div>
             </div>
 
             {/* Pitcher Info */}
@@ -304,21 +333,21 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({
           <div className="mt-3 pt-3 border-t border-sky-100 flex items-center gap-2">
             <button
               onClick={() => setShowPitcherSubModal(true)}
-              className="flex-1 py-1.5 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-800 text-xs font-semibold border border-sky-200 transition-colors"
+              className="flex-1 min-h-[40px] py-2 rounded-xl bg-sky-50 hover:bg-sky-100 text-sky-800 text-xs font-semibold border border-sky-200 transition-colors"
             >
               투수 교체
             </button>
             <button
               onClick={() => setShowBatterSubModal(true)}
-              className="flex-1 py-1.5 rounded-lg bg-sky-50 hover:bg-sky-100 text-sky-800 text-xs font-semibold border border-sky-200 transition-colors"
+              className="flex-1 min-h-[40px] py-2 rounded-xl bg-sky-50 hover:bg-sky-100 text-sky-800 text-xs font-semibold border border-sky-200 transition-colors"
             >
               대타 기용
             </button>
           </div>
         </div>
 
-        {/* 2D Ballpark Diamond Radar (Col 4) */}
-        <div className="lg:col-span-4 bg-white border border-sky-100 rounded-2xl p-4 flex flex-col items-center justify-center relative overflow-hidden min-h-[260px] shadow-sm">
+        {/* 2D Ballpark Diamond Radar (Col 4 on lg, 1 on md) */}
+        <div className="md:col-span-1 lg:col-span-4 bg-white border border-sky-100 rounded-2xl p-4 flex flex-col items-center justify-center relative overflow-hidden min-h-[250px] shadow-sm">
           {/* Turf SVG Background */}
           <div className="relative w-56 h-56 flex items-center justify-center">
             {/* Field Arc & Dirt Diamond */}
@@ -393,8 +422,8 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({
           </div>
         </div>
 
-        {/* 9-Split Strike Zone & Pitch Speed Radar (Col 4) */}
-        <div className="lg:col-span-4 bg-white border border-sky-100 rounded-2xl p-4 flex flex-col justify-between shadow-sm">
+        {/* 9-Split Strike Zone & Pitch Speed Radar (Col 4 on lg, 1 on md) */}
+        <div className="md:col-span-1 lg:col-span-4 bg-white border border-sky-100 rounded-2xl p-4 flex flex-col justify-between shadow-sm">
           <div>
             <div className="flex items-center justify-between pb-2 border-b border-sky-100 mb-3">
               <span className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
@@ -456,23 +485,23 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({
       </div>
 
       {/* 3. Tactical Action & Fast Simulation Control Bar */}
-      <div className="bg-white border border-sky-100 rounded-2xl p-4 shadow-sm">
-        <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
-          {/* Primary Pitch Actions */}
-          <div className="flex items-center gap-2">
+      <div className="bg-white border border-sky-100 rounded-2xl p-3.5 sm:p-4 shadow-sm">
+        <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-3.5">
+          {/* Primary Pitch Actions (2x2 touch grid on mobile, row on tablet/desktop) */}
+          <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2">
             <button
               onClick={() => handleNextPitch()}
               disabled={gameState.isFinished}
-              className="flex items-center gap-1.5 px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-40 text-white font-bold text-xs shadow-md shadow-sky-500/20 transition-all active:scale-95"
+              className="flex items-center justify-center gap-1.5 px-4 py-2.5 min-h-[44px] rounded-xl bg-sky-500 hover:bg-sky-600 disabled:opacity-40 text-white font-bold text-xs shadow-md shadow-sky-500/20 transition-all active:scale-95"
             >
-              <Play className="w-4 h-4 fill-white" />
-              1구 진행 (Next Pitch)
+              <Play className="w-4 h-4 fill-white shrink-0" />
+              <span>1구 진행</span>
             </button>
 
             <button
               onClick={handleNextBatter}
               disabled={gameState.isFinished}
-              className="px-4 py-2.5 rounded-xl bg-sky-50 hover:bg-sky-100 disabled:opacity-40 text-sky-800 font-semibold text-xs border border-sky-200 transition-colors"
+              className="min-h-[44px] px-3.5 py-2.5 rounded-xl bg-sky-50 hover:bg-sky-100 disabled:opacity-40 text-sky-800 font-semibold text-xs border border-sky-200 transition-colors active:scale-95"
             >
               1타석 완료
             </button>
@@ -480,7 +509,7 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({
             <button
               onClick={handleSkipInning}
               disabled={gameState.isFinished}
-              className="px-3.5 py-2.5 rounded-xl bg-sky-50 hover:bg-sky-100 disabled:opacity-40 text-sky-700 text-xs border border-sky-200 transition-colors"
+              className="min-h-[44px] px-3.5 py-2.5 rounded-xl bg-sky-50 hover:bg-sky-100 disabled:opacity-40 text-sky-700 font-semibold text-xs border border-sky-200 transition-colors active:scale-95"
             >
               이닝 넘기기
             </button>
@@ -488,60 +517,62 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({
             <button
               onClick={handleSkipToEnd}
               disabled={gameState.isFinished}
-              className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 disabled:opacity-40 text-slate-600 text-xs border border-slate-200 transition-colors"
+              className="min-h-[44px] px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 disabled:opacity-40 text-slate-700 font-semibold text-xs border border-slate-200 transition-colors active:scale-95"
             >
               경기 종료 스킵
             </button>
           </div>
 
           {/* Speed Selector (1x, 2x, 5x, 수동) */}
-          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200">
-            <span className="text-[11px] text-slate-500 px-2 font-medium">자동 배속:</span>
-            <button
-              onClick={() => setAutoPlaySpeed(null)}
-              className={`px-2.5 py-1 text-xs rounded-lg font-semibold transition-colors ${
-                autoPlaySpeed === null ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              수동
-            </button>
-            <button
-              onClick={() => setAutoPlaySpeed(900)}
-              className={`px-2.5 py-1 text-xs rounded-lg font-semibold transition-colors ${
-                autoPlaySpeed === 900 ? 'bg-sky-500 text-white font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              1x
-            </button>
-            <button
-              onClick={() => setAutoPlaySpeed(400)}
-              className={`px-2.5 py-1 text-xs rounded-lg font-semibold transition-colors ${
-                autoPlaySpeed === 400 ? 'bg-sky-500 text-white font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              2x
-            </button>
-            <button
-              onClick={() => setAutoPlaySpeed(120)}
-              className={`px-2.5 py-1 text-xs rounded-lg font-semibold transition-colors ${
-                autoPlaySpeed === 120 ? 'bg-sky-500 text-white font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              5x
-            </button>
+          <div className="flex items-center justify-between sm:justify-start gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200">
+            <span className="text-[11px] text-slate-500 px-2 font-medium whitespace-nowrap">자동 배속:</span>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setAutoPlaySpeed(null)}
+                className={`min-h-[36px] px-2.5 py-1 text-xs rounded-lg font-semibold transition-colors ${
+                  autoPlaySpeed === null ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                수동
+              </button>
+              <button
+                onClick={() => setAutoPlaySpeed(900)}
+                className={`min-h-[36px] px-2.5 py-1 text-xs rounded-lg font-semibold transition-colors ${
+                  autoPlaySpeed === 900 ? 'bg-sky-500 text-white font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                1x
+              </button>
+              <button
+                onClick={() => setAutoPlaySpeed(400)}
+                className={`min-h-[36px] px-2.5 py-1 text-xs rounded-lg font-semibold transition-colors ${
+                  autoPlaySpeed === 400 ? 'bg-sky-500 text-white font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                2x
+              </button>
+              <button
+                onClick={() => setAutoPlaySpeed(120)}
+                className={`min-h-[36px] px-2.5 py-1 text-xs rounded-lg font-semibold transition-colors ${
+                  autoPlaySpeed === 120 ? 'bg-sky-500 text-white font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                5x
+              </button>
+            </div>
           </div>
         </div>
 
         {/* Tactical Command Options (Manager Instructions) */}
         {!gameState.isFinished && (
-          <div className="mt-3 pt-3 border-t border-sky-100 flex flex-wrap items-center gap-2">
-            <span className="text-xs text-slate-600 font-semibold mr-1">감독 전술 지시:</span>
+          <div className="mt-3 pt-3 border-t border-sky-100 grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2">
+            <span className="col-span-2 text-xs text-slate-600 font-semibold mr-1">감독 전술 지시:</span>
             <button
               onClick={() => {
                 setPendingTactic('NORMAL');
                 handleNextPitch('NORMAL');
               }}
-              className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-colors ${
+              className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors ${
                 pendingTactic === 'NORMAL'
                   ? 'bg-sky-600 text-white border-sky-600'
                   : 'bg-sky-50 text-sky-800 border-sky-200 hover:bg-sky-100'
@@ -555,7 +586,7 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({
                 handleNextPitch('BUNT');
               }}
               disabled={gameState.outs >= 2}
-              className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-40 ${
+              className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors disabled:opacity-40 ${
                 pendingTactic === 'BUNT'
                   ? 'bg-amber-500 text-white font-bold border-amber-500'
                   : 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
@@ -569,7 +600,7 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({
                 handleNextPitch('STEAL');
               }}
               disabled={!gameState.bases.first && !gameState.bases.second}
-              className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-40 ${
+              className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors disabled:opacity-40 ${
                 pendingTactic === 'STEAL'
                   ? 'bg-emerald-600 text-white font-bold border-emerald-600'
                   : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
@@ -582,7 +613,7 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({
                 setPendingTactic('INTENTIONAL_WALK');
                 handleNextPitch('INTENTIONAL_WALK');
               }}
-              className={`px-3 py-1 rounded-lg text-xs font-semibold border transition-colors ${
+              className={`min-h-[40px] px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors ${
                 pendingTactic === 'INTENTIONAL_WALK'
                   ? 'bg-purple-600 text-white font-bold border-purple-600'
                   : 'bg-purple-50 text-purple-800 border-purple-200 hover:bg-purple-100'
@@ -658,6 +689,149 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({
         </div>
       </div>
 
+      {/* 4.5 Live Game Boxscore (Real-time Batter & Pitcher Stats) */}
+      <div className="bg-white border border-sky-100 rounded-2xl overflow-hidden shadow-sm">
+        <div className="bg-sky-50/70 px-4 py-3 border-b border-sky-100 flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Users className="w-4 h-4 text-sky-600" />
+            <h3 className="font-display font-bold text-xs text-sky-900">
+              실시간 경기 박스스코어 (오늘 경기 선수별 성적)
+            </h3>
+          </div>
+          <div className="flex items-center gap-1 bg-white p-1 rounded-xl border border-sky-200 text-xs">
+            <button
+              onClick={() => setLiveBoxTeamTab('AWAY')}
+              className={`px-3 py-1 rounded-lg font-semibold transition-colors ${
+                liveBoxTeamTab === 'AWAY' ? 'bg-sky-500 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              원정 · {gameState.awayTeam.name}
+            </button>
+            <button
+              onClick={() => setLiveBoxTeamTab('HOME')}
+              className={`px-3 py-1 rounded-lg font-semibold transition-colors ${
+                liveBoxTeamTab === 'HOME' ? 'bg-sky-500 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              홈 · {gameState.homeTeam.name}
+            </button>
+          </div>
+        </div>
+
+        {(() => {
+          const isAway = liveBoxTeamTab === 'AWAY';
+          const targetTeamId = isAway ? gameState.awayTeam.id : gameState.homeTeam.id;
+          const teamBatters = isAway ? gameState.battingOrderAway : gameState.battingOrderHome;
+          const teamPitcherPool = [
+            isAway ? gameState.currentPitcherAway : gameState.currentPitcherHome,
+            ...(isAway ? gameState.bullpenAway || [] : gameState.bullpenHome || []),
+          ];
+          const uniquePitchers = Array.from(new Map(teamPitcherPool.map(p => [p.id, p])).values()).filter(
+            p => (gameState.playerBoxStats?.[p.id]?.pitchesCount || 0) > 0 ||
+              p.id === (isAway ? gameState.currentPitcherAway.id : gameState.currentPitcherHome.id)
+          );
+
+          return (
+            <div className="p-4 space-y-4">
+              {/* Batter Boxscore */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs font-mono-numbers">
+                  <thead>
+                    <tr className="text-slate-500 border-b border-sky-100 bg-sky-50/40">
+                      <th className="py-2 px-2.5 font-sans font-bold">타선 · 선수명</th>
+                      <th className="py-2 px-2 text-center font-bold">타수</th>
+                      <th className="py-2 px-2 text-center font-bold text-emerald-700">안타</th>
+                      <th className="py-2 px-2 text-center font-bold text-amber-600">홈런</th>
+                      <th className="py-2 px-2 text-center font-bold">타점</th>
+                      <th className="py-2 px-2 text-center font-bold">득점</th>
+                      <th className="py-2 px-2 text-center font-bold">볼넷</th>
+                      <th className="py-2 px-2 text-center font-bold">삼진</th>
+                      <th className="py-2 px-2 text-center font-bold">도루</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-sky-100/60">
+                    {teamBatters
+                      .filter(b => b.teamId === targetTeamId || true)
+                      .map((b, idx) => {
+                        const st = gameState.playerBoxStats?.[b.id];
+                        const isAtPlate = currentBatter?.id === b.id && !gameState.isFinished;
+                        return (
+                          <tr key={`${b.id}_${idx}`} className={isAtPlate ? 'bg-amber-50/80' : 'hover:bg-sky-50/40'}>
+                            <td className="py-2 px-2.5 font-sans">
+                              <span className="text-sky-600 font-mono-numbers font-bold mr-1.5">{idx + 1}</span>
+                              <span className="font-bold text-slate-900">{b.name}</span>
+                              <span className="text-[10px] text-slate-400 ml-1.5">{b.primaryPosition}</span>
+                              {isAtPlate && (
+                                <span className="ml-1.5 px-1.5 py-0.2 rounded bg-amber-400 text-slate-950 text-[9px] font-bold">
+                                  타석
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2 px-2 text-center text-slate-700">{st?.atBats || 0}</td>
+                            <td className="py-2 px-2 text-center font-bold text-emerald-600">{st?.hits || 0}</td>
+                            <td className="py-2 px-2 text-center font-bold text-amber-600">{st?.homeRuns || 0}</td>
+                            <td className="py-2 px-2 text-center text-slate-800 font-semibold">{st?.rbi || 0}</td>
+                            <td className="py-2 px-2 text-center text-slate-700">{st?.runs || 0}</td>
+                            <td className="py-2 px-2 text-center text-slate-600">{st?.walks || 0}</td>
+                            <td className="py-2 px-2 text-center text-slate-500">{st?.strikeouts || 0}</td>
+                            <td className="py-2 px-2 text-center text-sky-600">{st?.stolenBases || 0}</td>
+                          </tr>
+                        );
+                      })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Pitcher Boxscore */}
+              <div className="overflow-x-auto pt-2 border-t border-sky-100">
+                <table className="w-full text-left text-xs font-mono-numbers">
+                  <thead>
+                    <tr className="text-slate-500 border-b border-sky-100 bg-sky-50/40">
+                      <th className="py-2 px-2.5 font-sans font-bold">등판 투수</th>
+                      <th className="py-2 px-2 text-center font-bold">이닝</th>
+                      <th className="py-2 px-2 text-center font-bold text-sky-700">투구수</th>
+                      <th className="py-2 px-2 text-center font-bold">피안타</th>
+                      <th className="py-2 px-2 text-center font-bold text-rose-600">실점</th>
+                      <th className="py-2 px-2 text-center font-bold">볼넷</th>
+                      <th className="py-2 px-2 text-center font-bold text-purple-600">탈삼진</th>
+                      <th className="py-2 px-2 text-center font-bold">피홈런</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-sky-100/60">
+                    {uniquePitchers.map(p => {
+                      const st = gameState.playerBoxStats?.[p.id];
+                      const outs = st?.inningsOuts || 0;
+                      const ipStr = `${Math.floor(outs / 3)}.${outs % 3}`;
+                      const isOnMound = currentPitcher?.id === p.id && !gameState.isFinished;
+                      return (
+                        <tr key={p.id} className={isOnMound ? 'bg-sky-50/90' : 'hover:bg-sky-50/40'}>
+                          <td className="py-2 px-2.5 font-sans">
+                            <span className="font-bold text-slate-900">{p.name}</span>
+                            <span className="text-[10px] text-slate-400 ml-1.5">{p.primaryPosition}</span>
+                            {isOnMound && (
+                              <span className="ml-1.5 px-1.5 py-0.2 rounded bg-sky-500 text-white text-[9px] font-bold">
+                                등판 중
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2 px-2 text-center text-slate-800 font-semibold">{ipStr}</td>
+                          <td className="py-2 px-2 text-center font-bold text-sky-700">{st?.pitchesCount || 0}</td>
+                          <td className="py-2 px-2 text-center text-slate-700">{st?.hitsAllowed || 0}</td>
+                          <td className="py-2 px-2 text-center font-bold text-rose-600">{st?.earnedRuns || 0}</td>
+                          <td className="py-2 px-2 text-center text-slate-600">{st?.walksAllowed || 0}</td>
+                          <td className="py-2 px-2 text-center font-bold text-purple-600">{st?.pitcherStrikeouts || 0}</td>
+                          <td className="py-2 px-2 text-center text-slate-600">{st?.homeRunsAllowed || 0}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
+        })()}
+      </div>
+
       {/* 5. Match Complete Boxscore Modal */}
       {gameState.isFinished && (
         <div className="p-6 bg-white border-2 border-sky-400 rounded-2xl shadow-xl text-center space-y-4">
@@ -695,23 +869,36 @@ export const LiveGameView: React.FC<LiveGameViewProps> = ({
             <h3 className="text-base font-bold text-slate-900 mb-2">교체 등판할 불펜 투수 선택</h3>
             <div className="max-h-60 overflow-y-auto space-y-2">
               {allRoster
-                .filter(p => p.role === 'PITCHER' && p.tier === 'FIRST_TEAM' && p.id !== currentPitcher.id)
-                .map(pitcher => (
-                  <div
-                    key={pitcher.id}
-                    onClick={() => handleSubstitutePitcher(pitcher)}
-                    className="p-3 bg-sky-50/60 hover:bg-sky-100 border border-sky-100 rounded-xl cursor-pointer flex items-center justify-between text-xs"
-                  >
-                    <div>
-                      <span className="font-bold text-sm text-slate-900">{pitcher.name}</span>
-                      <span className="text-slate-500 ml-2">보직: {pitcher.primaryPosition}</span>
+                .filter(p => p.role === 'PITCHER' && p.tier === 'FIRST_TEAM' && p.id !== currentPitcher.id && !p.isInjured)
+                .map(pitcher => {
+                  const usedList = gameState.isTop
+                    ? gameState.usedPitcherIdsHome || []
+                    : gameState.usedPitcherIdsAway || [];
+                  const alreadyUsed = usedList.includes(pitcher.id);
+                  return (
+                    <div
+                      key={pitcher.id}
+                      onClick={() => {
+                        if (!alreadyUsed) handleSubstitutePitcher(pitcher);
+                      }}
+                      className={`p-3 border rounded-xl flex items-center justify-between text-xs ${
+                        alreadyUsed
+                          ? 'bg-slate-50 border-slate-200 opacity-50 cursor-not-allowed'
+                          : 'bg-sky-50/60 hover:bg-sky-100 border-sky-100 cursor-pointer'
+                      }`}
+                    >
+                      <div>
+                        <span className="font-bold text-sm text-slate-900">{pitcher.name}</span>
+                        <span className="text-slate-500 ml-2">보직: {pitcher.primaryPosition}</span>
+                        {alreadyUsed && <span className="ml-2 text-[10px] text-rose-500 font-bold">(이미 등판함)</span>}
+                      </div>
+                      <div className="text-right font-mono-numbers">
+                        <span className="text-sky-600 font-bold">{pitcher.pitcherStats?.velocity}km/h</span>
+                        <span className="text-slate-500 block">구위 {pitcher.pitcherStats?.stuff}</span>
+                      </div>
                     </div>
-                    <div className="text-right font-mono-numbers">
-                      <span className="text-sky-600 font-bold">{pitcher.pitcherStats?.velocity}km/h</span>
-                      <span className="text-slate-500 block">구위 {pitcher.pitcherStats?.stuff}</span>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
             </div>
             <div className="mt-4 pt-3 border-t border-slate-100 text-right">
               <button

@@ -4,8 +4,9 @@
  */
 
 import React, { useState } from 'react';
-import { Trophy, Award, Clock, Settings, CheckCircle, Calendar, Sparkles, Users, ArrowUpDown } from 'lucide-react';
-import { Team, Player, HistorySeason, MatchRecord } from '../types/baseball';
+import { Trophy, Award, Clock, Settings, CheckCircle, Calendar, Sparkles, Users, ArrowUpDown, Flame, Play, FastForward, Crown } from 'lucide-react';
+import { Team, Player, HistorySeason, MatchRecord, PostseasonState, SeasonAwardRecord, AwardWinnerEntry } from '../types/baseball';
+import { computeSeasonAwards } from '../utils/simulationEngine';
 
 interface StandingsRecordViewProps {
   allTeams: Team[];
@@ -15,6 +16,13 @@ interface StandingsRecordViewProps {
   currentDay: number;
   historicalChampions: HistorySeason[];
   matchHistory: MatchRecord[];
+  postseasonState: PostseasonState | null;
+  seasonAwards?: SeasonAwardRecord[];
+  onStartPostseason: (sortedTeams: Team[]) => void;
+  onSimulatePostseasonGame: () => void;
+  onSimulatePostseasonSeries: () => void;
+  onSimulateFullPostseason?: () => void;
+  onResetPostseason: () => void;
   onUpdateSeasonAndDay: (nextSeason: number, nextDay: number) => void;
   onAdvanceNextSeason: (championTeamId: string) => void;
   onOpenPlayerDetail: (player: Player) => void;
@@ -28,11 +36,18 @@ export const StandingsRecordView: React.FC<StandingsRecordViewProps> = ({
   currentDay,
   historicalChampions,
   matchHistory,
+  postseasonState,
+  seasonAwards = [],
+  onStartPostseason,
+  onSimulatePostseasonGame,
+  onSimulatePostseasonSeries,
+  onSimulateFullPostseason,
+  onResetPostseason,
   onUpdateSeasonAndDay,
   onAdvanceNextSeason,
   onOpenPlayerDetail,
 }) => {
-  const [selectedSubTab, setSelectedSubTab] = useState<'STANDINGS' | 'TEAM_STATS' | 'LEADERS' | 'HISTORY' | 'LEAGUE_MGMT'>('STANDINGS');
+  const [selectedSubTab, setSelectedSubTab] = useState<'STANDINGS' | 'POSTSEASON' | 'TEAM_STATS' | 'LEADERS' | 'AWARDS' | 'HISTORY' | 'LEAGUE_MGMT'>('STANDINGS');
   const [statsTeamId, setStatsTeamId] = useState<string>(userTeam.id);
   const [statsRoleFilter, setStatsRoleFilter] = useState<'BATTER' | 'PITCHER'>('BATTER');
   const [statsTierFilter, setStatsTierFilter] = useState<'ALL' | 'FIRST_TEAM' | 'SECOND_TEAM'>('ALL');
@@ -168,6 +183,58 @@ export const StandingsRecordView: React.FC<StandingsRecordViewProps> = ({
     setTimeout(() => setMgmtToast(null), 4000);
   };
 
+  // 현재 회차 경기 기반 L10 / Streak / 상대전적 매트릭스 계산
+  const seasonMatches = matchHistory.filter(m => m.seasonNumber === seasonNumber);
+
+  const getTeamRecentAndStreak = (teamName: string) => {
+    // matchHistory는 최신 경기가 앞(index 0)에 있음
+    const teamMatches = seasonMatches.filter(m => m.awayTeamName === teamName || m.homeTeamName === teamName);
+    const outcomes = teamMatches.map(m => {
+      const isHome = m.homeTeamName === teamName;
+      const myScore = isHome ? m.homeScore : m.awayScore;
+      const oppScore = isHome ? m.awayScore : m.homeScore;
+      return myScore > oppScore ? 'W' : myScore < oppScore ? 'L' : 'D';
+    });
+
+    const last10 = outcomes.slice(0, 10);
+    const l10W = last10.filter(x => x === 'W').length;
+    const l10L = last10.filter(x => x === 'L').length;
+    const l10D = last10.filter(x => x === 'D').length;
+    const l10Text = last10.length > 0 ? `${l10W}승 ${l10D > 0 ? `${l10D}무 ` : ''}${l10L}패` : '-';
+
+    let streakText = '-';
+    let streakType: 'W' | 'L' | 'D' | null = null;
+    if (outcomes.length > 0) {
+      streakType = outcomes[0];
+      let count = 0;
+      for (const res of outcomes) {
+        if (res === streakType) count += 1;
+        else break;
+      }
+      streakText = `${count}${streakType === 'W' ? '연승' : streakType === 'L' ? '연패' : '연무'}`;
+    }
+
+    return { l10Text, streakText, streakType };
+  };
+
+  const getHeadToHead = (teamAName: string, teamBName: string) => {
+    let w = 0;
+    let l = 0;
+    let d = 0;
+    seasonMatches.forEach(m => {
+      if (m.awayTeamName === teamAName && m.homeTeamName === teamBName) {
+        if (m.awayScore > m.homeScore) w += 1;
+        else if (m.awayScore < m.homeScore) l += 1;
+        else d += 1;
+      } else if (m.homeTeamName === teamAName && m.awayTeamName === teamBName) {
+        if (m.homeScore > m.awayScore) w += 1;
+        else if (m.homeScore < m.awayScore) l += 1;
+        else d += 1;
+      }
+    });
+    return { w, l, d };
+  };
+
   return (
     <div className="space-y-6 pb-12">
       {/* Header */}
@@ -189,7 +256,15 @@ export const StandingsRecordView: React.FC<StandingsRecordViewProps> = ({
               selectedSubTab === 'STANDINGS' ? 'bg-sky-500 text-white font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            리그 순위표
+            리그 순위·상대전적
+          </button>
+          <button
+            onClick={() => setSelectedSubTab('POSTSEASON')}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1 ${
+              selectedSubTab === 'POSTSEASON' ? 'bg-sky-500 text-white font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Flame className="w-3.5 h-3.5" /> 포스트시즌
           </button>
           <button
             onClick={() => setSelectedSubTab('TEAM_STATS')}
@@ -201,15 +276,23 @@ export const StandingsRecordView: React.FC<StandingsRecordViewProps> = ({
           </button>
           <button
             onClick={() => setSelectedSubTab('LEADERS')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap ${
               selectedSubTab === 'LEADERS' ? 'bg-sky-500 text-white font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
             개인 타이틀
           </button>
           <button
+            onClick={() => setSelectedSubTab('AWARDS')}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1 whitespace-nowrap ${
+              selectedSubTab === 'AWARDS' ? 'bg-sky-500 text-white font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <Crown className="w-3.5 h-3.5" /> 어워드·전당
+          </button>
+          <button
             onClick={() => setSelectedSubTab('HISTORY')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors whitespace-nowrap ${
               selectedSubTab === 'HISTORY' ? 'bg-sky-500 text-white font-bold shadow-sm' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
@@ -237,87 +320,332 @@ export const StandingsRecordView: React.FC<StandingsRecordViewProps> = ({
         </div>
       )}
 
-      {/* View 1: 10-Team Standings Table */}
+      {/* View 1: 10-Team Standings Table + Head-to-Head Matrix */}
       {selectedSubTab === 'STANDINGS' && (
-        <div className="bg-white border border-sky-100 rounded-2xl overflow-hidden shadow-sm">
-          <div className="overflow-x-auto">
-            <table className="w-full text-center text-xs font-mono-numbers">
-              <thead>
-                <tr className="text-slate-600 border-b border-sky-100 bg-sky-50/60 font-bold">
-                  <th className="py-3 px-3 w-14">순위</th>
-                  <th className="py-3 px-4 text-left font-display font-semibold text-slate-700">구단명</th>
-                  <th className="py-3 px-2 w-16">경기수</th>
-                  <th className="py-3 px-2 text-emerald-600 font-bold w-14">승</th>
-                  <th className="py-3 px-2 text-slate-500 w-12">무</th>
-                  <th className="py-3 px-2 text-rose-500 font-bold w-14">패</th>
-                  <th className="py-3 px-3 font-bold text-sky-700 w-20">승률</th>
-                  <th className="py-3 px-2 text-slate-500 w-16">게임차</th>
-                  <th className="py-3 px-2 w-16">득점</th>
-                  <th className="py-3 px-2 w-16">실점</th>
-                  <th className="py-3 px-3 w-20">득실마진</th>
-                  <th className="py-3 px-3 text-slate-500 text-left">연고지 홈구장</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-sky-100/70">
-                {sortedTeams.map((team, idx) => {
-                  const games = team.wins + team.losses + team.draws;
-                  const winRate = team.wins + team.losses > 0 ? (team.wins / (team.wins + team.losses)).toFixed(3) : '.000';
-                  const gb = idx === 0 ? '-' : (((topWins - team.wins) + (team.losses - topLosses)) / 2).toFixed(1);
-                  const margin = team.runsScored - team.runsAllowed;
-                  const isUser = team.id === userTeam.id;
+        <div className="space-y-6">
+          <div className="bg-white border border-sky-100 rounded-2xl overflow-hidden shadow-sm">
+            <div className="overflow-x-auto">
+              <table className="w-full text-center text-xs font-mono-numbers">
+                <thead>
+                  <tr className="text-slate-600 border-b border-sky-100 bg-sky-50/60 font-bold">
+                    <th className="py-3 px-3 w-14">순위</th>
+                    <th className="py-3 px-4 text-left font-display font-semibold text-slate-700">구단명</th>
+                    <th className="py-3 px-2 w-14">경기</th>
+                    <th className="py-3 px-2 text-emerald-600 font-bold w-12">승</th>
+                    <th className="py-3 px-2 text-slate-500 w-10">무</th>
+                    <th className="py-3 px-2 text-rose-500 font-bold w-12">패</th>
+                    <th className="py-3 px-3 font-bold text-sky-700 w-18">승률</th>
+                    <th className="py-3 px-2 text-slate-500 w-14">게임차</th>
+                    <th className="py-3 px-2 w-14">득점</th>
+                    <th className="py-3 px-2 w-14">실점</th>
+                    <th className="py-3 px-2 w-16">득실차</th>
+                    <th className="py-3 px-2 w-24">최근10(L10)</th>
+                    <th className="py-3 px-2 w-16">연속</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-sky-100/70">
+                  {sortedTeams.map((team, idx) => {
+                    const games = team.wins + team.losses + team.draws;
+                    const winRate = team.wins + team.losses > 0 ? (team.wins / (team.wins + team.losses)).toFixed(3) : '.000';
+                    const gb = idx === 0 ? '-' : (((topWins - team.wins) + (team.losses - topLosses)) / 2).toFixed(1);
+                    const margin = team.runsScored - team.runsAllowed;
+                    const isUser = team.id === userTeam.id;
+                    const { l10Text, streakText, streakType } = getTeamRecentAndStreak(team.name);
 
+                    return (
+                      <tr
+                        key={team.id}
+                        className={`transition-colors ${
+                          isUser ? 'bg-sky-50/80 hover:bg-sky-100/60' : 'hover:bg-slate-50'
+                        }`}
+                      >
+                        <td className="py-3 px-3 font-display font-bold text-sm">
+                          <span className={`inline-flex items-center justify-center w-6 h-6 rounded-md ${
+                            idx === 0 ? 'bg-amber-400 text-slate-950 font-bold' : idx < 5 ? 'bg-sky-100 text-sky-800 font-bold' : 'text-slate-400'
+                          }`}>
+                            {idx + 1}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-left font-display font-bold text-sm flex items-center gap-2.5">
+                          <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: team.color }} />
+                          <button
+                            onClick={() => {
+                              setStatsTeamId(team.id);
+                              setSelectedSubTab('TEAM_STATS');
+                            }}
+                            className="text-slate-900 hover:text-sky-600 transition-colors text-left"
+                            title="클릭하여 이 구단의 선수별 기록 보기"
+                          >
+                            {team.name}
+                          </button>
+                          {idx < 5 && (
+                            <span className="text-[9px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-1 rounded font-bold">
+                              PS권
+                            </span>
+                          )}
+                          {isUser && (
+                            <span className="text-[10px] bg-sky-100 text-sky-800 border border-sky-300 px-1.5 py-0.2 rounded font-bold">
+                              MY TEAM
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-3 px-2 text-slate-700">{games}</td>
+                        <td className="py-3 px-2 font-bold text-emerald-600">{team.wins}</td>
+                        <td className="py-3 px-2 text-slate-500">{team.draws}</td>
+                        <td className="py-3 px-2 font-bold text-rose-500">{team.losses}</td>
+                        <td className="py-3 px-3 font-extrabold text-sky-700 text-sm">{winRate}</td>
+                        <td className="py-3 px-2 text-slate-500">{gb}</td>
+                        <td className="py-3 px-2 text-slate-700">{team.runsScored}</td>
+                        <td className="py-3 px-2 text-slate-700">{team.runsAllowed}</td>
+                        <td className={`py-3 px-2 font-semibold ${margin > 0 ? 'text-emerald-600' : margin < 0 ? 'text-rose-500' : 'text-slate-500'}`}>
+                          {margin > 0 ? `+${margin}` : margin}
+                        </td>
+                        <td className="py-3 px-2 text-slate-700 font-semibold">{l10Text}</td>
+                        <td className="py-3 px-2">
+                          <span className={`px-2 py-0.5 rounded font-bold text-[11px] ${
+                            streakType === 'W'
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                              : streakType === 'L'
+                              ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                              : 'text-slate-400'
+                          }`}>
+                            {streakText}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* 10x10 Head-to-Head Matrix */}
+          <div className="bg-white border border-sky-100 rounded-2xl overflow-hidden shadow-sm">
+            <div className="bg-sky-50/70 px-5 py-3 border-b border-sky-100 flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs font-display font-bold text-sky-900">
+                제 {seasonNumber}회차 구단 간 상대 전적 매트릭스 (가로 팀 기준 승-무-패)
+              </span>
+              <span className="text-[11px] text-slate-500">
+                총 {seasonMatches.length}경기 누적 결과 반영
+              </span>
+            </div>
+            <div className="overflow-x-auto p-3">
+              <table className="w-full text-center text-[11px] font-mono-numbers border-collapse">
+                <thead>
+                  <tr className="bg-sky-50/60 text-slate-700 border-b border-sky-100">
+                    <th className="py-2 px-2 text-left font-display font-bold sticky left-0 bg-sky-50 z-10 min-w-[92px]">구단 ＼ 상대</th>
+                    {sortedTeams.map(opp => (
+                      <th key={opp.id} className="py-2 px-1.5 font-display font-semibold whitespace-nowrap min-w-[66px]">
+                        {opp.name}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-sky-100/60">
+                  {sortedTeams.map(rowTeam => {
+                    const isUserRow = rowTeam.id === userTeam.id;
+                    return (
+                      <tr key={rowTeam.id} className={isUserRow ? 'bg-sky-50/70' : 'hover:bg-slate-50/70'}>
+                        <td className="py-2 px-2 text-left font-display font-bold text-slate-800 sticky left-0 bg-white/95 border-r border-sky-100 whitespace-nowrap">
+                          <span className="inline-block w-2 h-2 rounded-full mr-1.5" style={{ backgroundColor: rowTeam.color }} />
+                          {rowTeam.name}
+                        </td>
+                        {sortedTeams.map(colTeam => {
+                          if (rowTeam.id === colTeam.id) {
+                            return (
+                              <td key={colTeam.id} className="py-2 px-1.5 bg-slate-100/80 text-slate-400">
+                                —
+                              </td>
+                            );
+                          }
+                          const h2h = getHeadToHead(rowTeam.name, colTeam.name);
+                          const total = h2h.w + h2h.l + h2h.d;
+                          const cellCls =
+                            total === 0
+                              ? 'text-slate-300'
+                              : h2h.w > h2h.l
+                              ? 'text-emerald-700 bg-emerald-50/50 font-bold'
+                              : h2h.w < h2h.l
+                              ? 'text-rose-600 bg-rose-50/50 font-semibold'
+                              : 'text-slate-600';
+                          return (
+                            <td key={colTeam.id} className={`py-2 px-1.5 border-r border-sky-50 ${cellCls}`}>
+                              {total === 0 ? '0-0' : `${h2h.w}-${h2h.d}-${h2h.l}`}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* View 1.2: 5-Team Postseason Tournament Bracket */}
+      {selectedSubTab === 'POSTSEASON' && (
+        <div className="space-y-6">
+          <div className="bg-white border border-sky-100 rounded-2xl p-5 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h3 className="text-lg font-display font-bold text-slate-900 flex items-center gap-2">
+                <Flame className="w-5 h-5 text-amber-500" /> 제 {seasonNumber}회차 JBL 포스트시즌 토너먼트
+              </h3>
+              <p className="text-xs text-slate-500 mt-1">
+                정규시즌 1~5위 구단이 와일드카드(4·5위) → 준플레이오프(3위) → 플레이오프(2위) → JBL 한국시리즈(1위) 계단식 토너먼트를 치릅니다.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {!postseasonState ? (
+                <button
+                  onClick={() => onStartPostseason(sortedTeams)}
+                  className="px-4 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold shadow-sm transition-colors flex items-center gap-1.5"
+                >
+                  <Play className="w-3.5 h-3.5 fill-white" /> 현재 순위(1~5위)로 포스트시즌 개막
+                </button>
+              ) : (
+                <>
+                  {!postseasonState.championTeamId && (
+                    <>
+                      <button
+                        onClick={onSimulatePostseasonGame}
+                        className="px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-600 text-white text-xs font-bold shadow-sm flex items-center gap-1.5"
+                      >
+                        <Play className="w-3.5 h-3.5 fill-white" /> 다음 1경기 시뮬
+                      </button>
+                      <button
+                        onClick={onSimulatePostseasonSeries}
+                        className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold shadow-sm flex items-center gap-1.5 whitespace-nowrap"
+                      >
+                        <FastForward className="w-3.5 h-3.5" /> 현재 시리즈 완주
+                      </button>
+                      {onSimulateFullPostseason && (
+                        <button
+                          onClick={onSimulateFullPostseason}
+                          className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold shadow-sm flex items-center gap-1.5 whitespace-nowrap"
+                        >
+                          <Trophy className="w-3.5 h-3.5" /> 포스트시즌 전체 자동 완주
+                        </button>
+                      )}
+                    </>
+                  )}
+                  <button
+                    onClick={onResetPostseason}
+                    className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold"
+                  >
+                    브래킷 초기화
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {!postseasonState ? (
+            <div className="bg-white border border-sky-100 rounded-2xl p-6 shadow-sm space-y-4">
+              <h4 className="text-xs font-bold text-slate-600">현재 정규시즌 포스트시즌 진출 예상 시드 (TOP 5)</h4>
+              <div className="grid grid-cols-1 sm:grid-cols-5 gap-3">
+                {sortedTeams.slice(0, 5).map((t, idx) => (
+                  <div key={t.id} className="p-4 rounded-xl bg-sky-50/70 border border-sky-200 text-center space-y-1">
+                    <span className="text-[11px] font-bold text-sky-700 block">
+                      {idx === 0 ? '1위 · 한국시리즈 직행' : idx === 1 ? '2위 · 플레이오프' : idx === 2 ? '3위 · 준플레이오프' : `${idx + 1}위 · 와일드카드`}
+                    </span>
+                    <div className="font-display font-bold text-base text-slate-900">{t.name}</div>
+                    <span className="text-xs font-mono-numbers text-slate-500">
+                      {t.wins}승 {t.draws}무 {t.losses}패
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {postseasonState.championTeamId && (() => {
+                const champ = allTeams.find(t => t.id === postseasonState.championTeamId);
+                return (
+                  <div className="bg-gradient-to-r from-amber-50 via-yellow-50 to-amber-50 border-2 border-amber-300 rounded-2xl p-6 text-center space-y-3 shadow-md">
+                    <div className="inline-flex p-3 rounded-2xl bg-amber-400 text-slate-950">
+                      <Trophy className="w-7 h-7" />
+                    </div>
+                    <h4 className="text-2xl font-display font-extrabold text-slate-900">
+                      🏆 제 {postseasonState.seasonNumber}회차 JBL 한국시리즈 우승: {champ?.name}!
+                    </h4>
+                    <p className="text-xs text-slate-600">
+                      포스트시즌 모든 경기가 종료되었습니다. 우승 트로피를 역대 족보에 등재하고 다음 회차 새 시즌을 개막할 수 있습니다.
+                    </p>
+                    <button
+                      onClick={() => champ && onAdvanceNextSeason(champ.id)}
+                      className="px-6 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs shadow-sm transition-colors"
+                    >
+                      🏆 {champ?.name} 우승 확정하고 제 {seasonNumber + 1}회차 개막하기
+                    </button>
+                  </div>
+                );
+              })()}
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {postseasonState.seriesList.map(series => {
+                  const higher = allTeams.find(t => t.id === series.higherSeedTeamId);
+                  const lower = allTeams.find(t => t.id === series.lowerSeedTeamId);
+                  const winner = series.winnerTeamId ? allTeams.find(t => t.id === series.winnerTeamId) : null;
                   return (
-                    <tr
-                      key={team.id}
-                      className={`transition-colors ${
-                        isUser ? 'bg-sky-50/80 hover:bg-sky-100/60' : 'hover:bg-slate-50'
+                    <div
+                      key={series.id}
+                      className={`bg-white rounded-2xl p-5 border shadow-sm space-y-3 ${
+                        !winner ? 'border-sky-400 ring-2 ring-sky-100' : 'border-sky-100'
                       }`}
                     >
-                      <td className="py-3 px-3 font-display font-bold text-sm">
-                        <span className={`inline-flex items-center justify-center w-6 h-6 rounded-md ${
-                          idx === 0 ? 'bg-amber-400 text-slate-950 font-bold' : idx < 4 ? 'bg-sky-100 text-sky-800 font-bold' : 'text-slate-400'
-                        }`}>
-                          {idx + 1}
+                      <div className="flex items-center justify-between pb-2 border-b border-sky-100">
+                        <span className="font-display font-bold text-sm text-sky-900">
+                          {series.roundName} ({series.winsNeeded}선승제)
                         </span>
-                      </td>
-                      <td className="py-3 px-4 text-left font-display font-bold text-sm flex items-center gap-2.5">
-                        <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: team.color }} />
-                        <button
-                          onClick={() => {
-                            setStatsTeamId(team.id);
-                            setSelectedSubTab('TEAM_STATS');
-                          }}
-                          className="text-slate-900 hover:text-sky-600 transition-colors text-left"
-                          title="클릭하여 이 구단의 선수별 기록 보기"
-                        >
-                          {team.name}
-                        </button>
-                        {isUser && (
-                          <span className="text-[10px] bg-sky-100 text-sky-800 border border-sky-300 px-1.5 py-0.2 rounded font-bold">
-                            MY TEAM
+                        {winner ? (
+                          <span className="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 text-[11px] font-bold">
+                            승자: {winner.name}
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-800 text-[11px] font-bold animate-pulse">
+                            진행 중
                           </span>
                         )}
-                      </td>
-                      <td className="py-3 px-2 text-slate-700">{games}</td>
-                      <td className="py-3 px-2 font-bold text-emerald-600">{team.wins}</td>
-                      <td className="py-3 px-2 text-slate-500">{team.draws}</td>
-                      <td className="py-3 px-2 font-bold text-rose-500">{team.losses}</td>
-                      <td className="py-3 px-3 font-extrabold text-sky-700 text-sm">{winRate}</td>
-                      <td className="py-3 px-2 text-slate-500">{gb}</td>
-                      <td className="py-3 px-2 text-slate-700">{team.runsScored}</td>
-                      <td className="py-3 px-2 text-slate-700">{team.runsAllowed}</td>
-                      <td className={`py-3 px-3 font-semibold ${margin > 0 ? 'text-emerald-600' : margin < 0 ? 'text-rose-500' : 'text-slate-500'}`}>
-                        {margin > 0 ? `+${margin}` : margin}
-                      </td>
-                      <td className="py-3 px-3 text-left text-slate-600 font-sans text-xs">
-                        {team.homeStadium}
-                      </td>
-                    </tr>
+                      </div>
+
+                      <div className="grid grid-cols-3 items-center text-center bg-sky-50/70 rounded-xl p-3 border border-sky-100">
+                        <div>
+                          <span className="text-[10px] text-slate-500 block">상위 시드</span>
+                          <span className="font-display font-bold text-sm text-slate-900">{higher?.name}</span>
+                        </div>
+                        <div className="font-mono-numbers font-extrabold text-xl text-sky-700">
+                          {series.higherWins} : {series.lowerWins}
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-500 block">도전 시드</span>
+                          <span className="font-display font-bold text-sm text-slate-900">{lower?.name}</span>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1.5 max-h-40 overflow-y-auto text-xs font-mono-numbers">
+                        {series.gamesLog.length === 0 ? (
+                          <p className="text-slate-400 text-center py-2 font-sans">경기 진행 대기 중 (상단 버튼으로 시뮬레이션)</p>
+                        ) : (
+                          series.gamesLog.map(g => (
+                            <div key={g.gameNumber} className="flex items-center justify-between px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-100">
+                              <span className="text-slate-500">{g.gameNumber}차전</span>
+                              <span className="font-semibold text-slate-800">
+                                {g.awayTeamName} {g.awayScore} : {g.homeScore} {g.homeTeamName}
+                              </span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
                   );
                 })}
-              </tbody>
-            </table>
-          </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -491,6 +819,11 @@ export const StandingsRecordView: React.FC<StandingsRecordViewProps> = ({
                             >
                               {p.name}
                             </button>
+                            {p.isInjured && (
+                              <span className="ml-1.5 px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 text-[10px] font-bold">
+                                부상 {p.injuryDays}일
+                              </span>
+                            )}
                           </td>
                           <td className="py-2.5 px-2 text-center">
                             <span className="px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 font-bold text-[10px]">
@@ -559,6 +892,11 @@ export const StandingsRecordView: React.FC<StandingsRecordViewProps> = ({
                             >
                               {p.name}
                             </button>
+                            {p.isInjured && (
+                              <span className="ml-1.5 px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 text-[10px] font-bold">
+                                부상 {p.injuryDays}일
+                              </span>
+                            )}
                           </td>
                           <td className="py-2.5 px-2 text-center">
                             <span className="px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 font-bold text-[10px]">
@@ -782,6 +1120,121 @@ export const StandingsRecordView: React.FC<StandingsRecordViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* View 2.5: Season Awards & Golden Glove */}
+      {selectedSubTab === 'AWARDS' && (() => {
+        const liveProjection = computeSeasonAwards(
+          seasonNumber,
+          postseasonState?.championTeamId
+            ? (allTeams.find(t => t.id === postseasonState.championTeamId)?.name || '진행 중')
+            : '진행 중',
+          allTeams,
+          allPlayers
+        );
+
+        const openWinnerDetail = (entry: AwardWinnerEntry) => {
+          const allList = Object.values(allPlayers).flat();
+          const found = allList.find(p => p.id === entry.playerId);
+          if (found) onOpenPlayerDetail(found);
+        };
+
+        const renderAwardCard = (record: SeasonAwardRecord, isLivePreview: boolean) => {
+          const mainAwards = [
+            { label: '정규시즌 MVP', badge: 'bg-amber-100 text-amber-800 border-amber-300', entry: record.mvp },
+            { label: '신인왕 (ROTY)', badge: 'bg-emerald-100 text-emerald-800 border-emerald-300', entry: record.rookieOfYear },
+            { label: '타격왕 (AVG)', badge: 'bg-sky-100 text-sky-800 border-sky-200', entry: record.battingTitle },
+            { label: '홈런왕 (HR)', badge: 'bg-orange-100 text-orange-800 border-orange-200', entry: record.homeRunKing },
+            { label: '타점왕 (RBI)', badge: 'bg-rose-100 text-rose-800 border-rose-200', entry: record.rbiKing },
+            { label: '다승왕 (WINS)', badge: 'bg-indigo-100 text-indigo-800 border-indigo-200', entry: record.winsKing },
+            { label: '방어율왕 (ERA)', badge: 'bg-teal-100 text-teal-800 border-teal-200', entry: record.eraKing },
+            { label: '탈삼진왕 (SO)', badge: 'bg-purple-100 text-purple-800 border-purple-200', entry: record.strikeoutKing },
+          ];
+
+          return (
+            <div
+              key={`${record.seasonNumber}_${isLivePreview ? 'live' : 'arch'}`}
+              className={`bg-white border rounded-2xl p-5 shadow-sm space-y-4 ${
+                isLivePreview ? 'border-sky-300 ring-1 ring-sky-100' : 'border-sky-100'
+              }`}
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-sky-100">
+                <div className="flex items-center gap-2">
+                  <Crown className={`w-5 h-5 ${isLivePreview ? 'text-sky-600' : 'text-amber-500'}`} />
+                  <h3 className="font-display font-bold text-base text-slate-900">
+                    {isLivePreview
+                      ? `제 ${record.seasonNumber}회차 실시간 어워드 레이스 예상`
+                      : `제 ${record.seasonNumber}회차 공식 결산 어워드`}
+                  </h3>
+                </div>
+                <span className={`px-3 py-1 rounded-full text-xs font-bold border ${
+                  isLivePreview
+                    ? 'bg-sky-50 text-sky-700 border-sky-200'
+                    : 'bg-amber-50 text-amber-800 border-amber-300'
+                }`}>
+                  {isLivePreview ? `현재 ${currentDay}일차 기준` : `🏆 우승: ${record.championTeamName}`}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                {mainAwards.map(item => (
+                  <button
+                    key={item.label}
+                    onClick={() => openWinnerDetail(item.entry)}
+                    className="p-3.5 rounded-xl bg-sky-50/50 hover:bg-sky-100/70 border border-sky-100 text-left transition-colors space-y-1"
+                  >
+                    <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded border ${item.badge}`}>
+                      {item.label}
+                    </span>
+                    <div className="flex items-baseline justify-between gap-2 pt-0.5">
+                      <span className="font-display font-extrabold text-sm text-slate-900 truncate">
+                        {item.entry.playerName}
+                      </span>
+                      <span className="text-[11px] font-semibold text-sky-700 shrink-0">
+                        {item.entry.teamName} · {item.entry.position}
+                      </span>
+                    </div>
+                    <p className="text-[11px] font-mono-numbers text-slate-500 truncate">{item.entry.summary}</p>
+                  </button>
+                ))}
+              </div>
+
+              <div className="pt-2">
+                <h4 className="text-xs font-bold text-slate-700 mb-2.5 flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500" /> 포지션별 골든글러브 (10인)
+                </h4>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                  {record.goldenGlove.map((gg, idx) => (
+                    <button
+                      key={`${gg.position}_${idx}`}
+                      onClick={() => openWinnerDetail(gg)}
+                      className="p-2.5 rounded-xl bg-amber-50/50 hover:bg-amber-100/70 border border-amber-200/70 text-left transition-colors"
+                    >
+                      <span className="text-[10px] font-bold text-amber-700 block">{gg.position}</span>
+                      <span className="font-bold text-xs text-slate-900 block truncate">{gg.playerName}</span>
+                      <span className="text-[10px] text-slate-500 block truncate">{gg.teamName}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          );
+        };
+
+        return (
+          <div className="space-y-6">
+            {renderAwardCard(liveProjection, true)}
+            {seasonAwards.length === 0 ? (
+              <div className="bg-white border border-sky-100 rounded-2xl p-8 text-center text-xs text-slate-500 shadow-sm">
+                아직 결산된 과거 회차 어워드 기록이 없습니다. 시즌을 완주하고 우승팀을 확정하면 해당 회차 MVP·신인왕·골든글러브가 명예의 전당에 자동 영구 보존됩니다.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {[...seasonAwards].sort((a, b) => b.seasonNumber - a.seasonNumber).map(rec => renderAwardCard(rec, false))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* View 3: JBL Champions History */}
       {selectedSubTab === 'HISTORY' && (

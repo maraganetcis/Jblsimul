@@ -28,12 +28,12 @@ export const TeamSelectorModal: React.FC<TeamSelectorModalProps> = ({
     <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="bg-white border border-sky-100 rounded-2xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
         {/* Modal Header */}
-        <div className="p-6 border-b border-sky-100 bg-gradient-to-r from-sky-50 via-white to-sky-50 flex items-center justify-between">
+        <div className="p-4 sm:p-6 border-b border-sky-100 bg-gradient-to-r from-sky-50 via-white to-sky-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div>
             <div className="flex items-center gap-2">
               <span className="text-xs uppercase tracking-wider text-sky-700 font-bold">JBL League Franchise Selection</span>
             </div>
-            <h2 className="text-xl font-display font-bold text-slate-900 mt-1">
+            <h2 className="text-lg sm:text-xl font-display font-bold text-slate-900 mt-1">
               지휘할 JBL 프로야구 구단을 선택하세요
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
@@ -43,7 +43,7 @@ export const TeamSelectorModal: React.FC<TeamSelectorModalProps> = ({
           {onClose && (
             <button
               onClick={onClose}
-              className="text-slate-500 hover:text-slate-800 px-3 py-1.5 rounded-lg border border-slate-200 text-xs transition-colors"
+              className="self-end sm:self-auto text-slate-500 hover:text-slate-800 px-3.5 py-2 min-h-[40px] rounded-xl border border-slate-200 text-xs font-semibold transition-colors shrink-0"
             >
               닫기
             </button>
@@ -51,7 +51,7 @@ export const TeamSelectorModal: React.FC<TeamSelectorModalProps> = ({
         </div>
 
         {/* Teams Grid */}
-        <div className="p-6 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-4 bg-slate-50/40">
+        <div className="p-4 sm:p-6 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-3.5 sm:gap-4 bg-slate-50/40">
           {teams.map((team) => {
             const isSelected = team.id === selectedTeamId;
             return (
@@ -129,13 +129,13 @@ export const TeamSelectorModal: React.FC<TeamSelectorModalProps> = ({
         </div>
 
         {/* Modal Footer */}
-        <div className="p-4 border-t border-sky-100 bg-white flex items-center justify-between">
+        <div className="p-4 border-t border-sky-100 bg-white flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
           <span className="text-xs text-slate-500">
             선택된 구단으로 시즌을 진행하며 트레이드, 드래프트, 스프레드시트 연동이 활성화됩니다.
           </span>
           <button
             onClick={onClose}
-            className="px-5 py-2 rounded-lg bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs shadow-md shadow-sky-500/20 transition-colors"
+            className="min-h-[44px] px-5 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-600 text-white font-bold text-xs shadow-md shadow-sky-500/20 transition-colors shrink-0"
           >
             선택 완료하고 시작하기
           </button>
